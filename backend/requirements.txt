@@ -1,0 +1,48 @@
+# =============================================================================
+# RouteGen AI — Backend Dependencies
+# =============================================================================
+
+# --- Web Framework ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+python-dotenv==1.0.1
+python-multipart==0.0.20
+
+# --- Database Drivers ---
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+motor==3.7.0
+redis[hiredis]==5.2.1
+alembic==1.14.1
+
+# --- LLM & AI Orchestration ---
+litellm==1.55.8
+langgraph==0.2.60
+langchain-core==0.3.28
+# dspy-ai==2.5.43  # Not used yet — uncomment when DSPy assertions are implemented
+
+# --- ML & NLP ---
+scikit-learn==1.6.1
+nltk==3.9.1
+# spacy==3.8.4  # Not used yet — uncomment when NLP features are added
+tiktoken==0.8.0
+
+# --- Semantic Cache & Embeddings ---
+# chromadb==0.5.23  # Requires C++ Build Tools on Windows — uncomment if available
+# sentence-transformers==3.3.1  # Only needed with chromadb
+
+# --- Observability ---
+langfuse==2.55.0
+
+# --- Quality Metrics ---
+# bert-score==0.3.13  # Not used yet — uncomment when quality metrics are implemented
+
+# --- WebSocket ---
+python-socketio==5.12.0
+
+# --- Testing ---
+pytest==8.3.4
+pytest-asyncio==0.25.0
+httpx>=0.23.0,<0.28.0

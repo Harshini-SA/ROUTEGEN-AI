@@ -1,0 +1,306 @@
+PRODUCT REQUIREMENTS DOCUMENT
+RouteGen AI - Intelligent Model Routing for Cost Optimization
+
+Team: Neural Nexus
+Track: Track 03 - Intelligent Model Routing (Open Stack)
+Event: HACKINDIA
+Version: v1.0
+Date: June 2025
+Status: Hackathon Submission
+
+------------------------------------------------------------------------
+
+1. EXECUTIVE SUMMARY
+
+RouteGen AI is an intelligent model routing middleware that intercepts every prompt in an AI pipeline and automatically dispatches it to the most cost-effective LLM tier without sacrificing output quality. Built by Team Neural Nexus for HACKINDIA Track 03, RouteGen AI addresses one of the most pressing inefficiencies in modern AI deployments: the blanket use of expensive frontier models for tasks that smaller, faster models can handle equally well.
+
+By classifying task complexity in real-time and routing across three model tiers (Small, Large, and Reasoning), RouteGen AI achieves up to 80% reduction in API costs while maintaining quality parity through an automatic fallback mechanism and full observability via Langfuse.
+
+------------------------------------------------------------------------
+
+2. PROBLEM STATEMENT
+
+2.1 Core Problem
+
+Current AI pipelines route every single task, from complex multi-step reasoning down to basic JSON formatting, through massive expensive frontier models like GPT-4o or Claude Opus. This one-size-fits-all approach creates three compounding problems.
+
+Cost Explosion: API bills skyrocket as scale increases. Simple tasks like data extraction or reformatting cost the same per token as deep reasoning tasks, meaning companies pay frontier model prices for work a small model could handle.
+
+Latency Overhead: Trillion-parameter models introduce unnecessary latency for basic tasks that a 7B parameter model can resolve in milliseconds. Every user request waits longer than it needs to.
+
+Zero Observability: There is no visibility into which model handled which task, why it was selected, or how much it cost, making debugging and cost optimization nearly impossible.
+
+2.2 Industry Gap
+
+The industry currently lacks a production-ready intelligent routing layer that can evaluate task complexity in real-time at each orchestration node, automatically select the cheapest model capable of meeting quality requirements, log all routing decisions with full cost and performance traceability, and fall back gracefully when a smaller model fails to meet quality thresholds.
+
+------------------------------------------------------------------------
+
+3. GOALS AND OBJECTIVES
+
+3.1 Primary Goals
+
+Build a routing layer that classifies task complexity at each orchestration step and maps it to the appropriate model tier (Small, Large, or Reasoning).
+
+Demonstrate a real multi-step AI pipeline where different LLMs handle different nodes, with per-step cost tracking visible in a live dashboard.
+
+Show a quality-vs-cost tradeoff dashboard displaying total savings achieved and accuracy delta versus a single-model baseline.
+
+Ensure all routing decisions are fully observable: log which model handled each step, why it was selected, and the exact cost incurred.
+
+3.2 Success Metrics
+
+API Cost Reduction target is 60 to 80 percent compared to an all-large-model baseline, measured by per-step token cost multiplied by model price.
+
+Quality Retention target is greater than 90 percent versus the baseline as measured by BERTScore and DSPy assertions.
+
+Router Latency Overhead must be less than 10 milliseconds per routing decision as measured by Langfuse trace latency.
+
+Fallback Accuracy must be 100 percent escalation on any assertion failure, verified by automated test suite.
+
+Observability Coverage must be 100 percent of pipeline nodes logged in Langfuse with all required fields.
+
+------------------------------------------------------------------------
+
+4. SCOPE
+
+4.1 In Scope for v1.0
+
+Complexity Classifier: real-time prompt scoring engine using rule-based logic plus a lightweight ML model.
+
+Model Router: LiteLLM-based dispatch layer supporting three tiers of models.
+
+Demo Pipeline: a 5-node research report generation pipeline built on LangGraph.
+
+Semantic Cache: vector database lookup for repeated or similar queries, returning results at zero API cost.
+
+Auto-Fallback: DSPy assertion-based escalation to the next model tier when output quality fails.
+
+Observability Dashboard: Langfuse integration with per-step cost, latency, and model selection logs.
+
+Quality vs Cost Dashboard: real-time comparison against the all-large-model baseline.
+
+Budget Kill-Switch: configurable per-run spending cap that halts execution when exceeded.
+
+4.2 Out of Scope for v1.0
+
+Fine-tuning of any base model, multi-tenant SaaS billing or authentication, custom enterprise SSO or RBAC controls, and a mobile application are all deferred to later versions.
+
+------------------------------------------------------------------------
+
+5. USER STORIES AND FUNCTIONAL REQUIREMENTS
+
+5.1 User Personas
+
+Persona A - AI Engineer: Builds and maintains multi-step LangGraph pipelines. Wants to reduce API costs without rewriting existing pipeline logic. Needs a drop-in routing layer with minimal integration effort.
+
+Persona B - Engineering Manager: Responsible for the AI budget. Wants a real-time dashboard showing cost savings, model selections, and quality metrics per pipeline run.
+
+Persona C - Platform Architect: Evaluating RouteGen AI for production adoption. Needs full observability, fallback guarantees, and horizontal scalability assurances.
+
+5.2 User Stories
+
+US-01: As an AI Engineer, I want each pipeline node to automatically route to the cheapest capable model so I do not overspend on simple tasks. Acceptance criteria: routing occurs before every LLM call and the model tier matches the complexity score.
+
+US-02: As an AI Engineer, I want failed outputs to automatically escalate to a stronger model so pipeline quality is maintained. Acceptance criteria: a DSPy assertion failure triggers fallback and the event is logged in Langfuse.
+
+US-03: As an Engineering Manager, I want a dashboard showing cost per step versus the baseline so I can report actual savings. Acceptance criteria: dashboard shows per-node cost, total savings percentage, and quality delta.
+
+US-04: As an AI Engineer, I want repeated prompts to hit a semantic cache and return instantly at zero cost. Acceptance criteria: cache hit rate is tracked and identical or similar queries skip the LLM call entirely.
+
+US-05: As a Platform Architect, I want every routing decision logged with model, reason, latency, and cost. Acceptance criteria: 100 percent of pipeline nodes produce a Langfuse trace with all required fields.
+
+US-06: As an Engineering Manager, I want a budget kill-switch so unexpected API spend is capped automatically. Acceptance criteria: the pipeline halts and sends an alert when cumulative cost exceeds the configured cap.
+
+US-07: As an AI Engineer, I want to add RouteGen AI to any existing LangGraph pipeline with minimal code changes. Acceptance criteria: integration requires fewer than 50 lines of code change to an existing pipeline.
+
+------------------------------------------------------------------------
+
+6. SYSTEM ARCHITECTURE
+
+6.1 Architecture Overview
+
+RouteGen AI operates as a middleware intercept layer sitting between the orchestration framework (LangGraph) and all LLM providers. Every node in the pipeline passes through RouteGen AI before any model call is made.
+
+The pipeline flow works as follows. A JSON prompt or user input enters the system through the Input Gateway and API Endpoint. It is first checked against the Semantic Cache in a vector database; if a similar query exists with a cosine similarity above 0.95, the cached result is returned immediately at zero cost. If there is no cache hit, the Compositional Analysis and Complexity Grading Engine scores the prompt on a scale of 1 to 10. The Dynamic Routing and Dispatch module then sends the prompt to the appropriate model tier. The Small Tier (score 1 to 4) uses models like Llama 3, Claude Haiku, and Gemini Flash. The Large Tier (score 5 to 7) uses models like GPT-4o and Claude Sonnet. The Reasoning Tier (score 8 to 10) uses models like o3-mini and Claude Opus. If the output fails a DSPy quality assertion, the Auto-Fallback Self-Healing Loop automatically escalates to the next tier. The final output is assembled and delivered to the user. Throughout the entire process, every event is sent to the Observability and Telemetry Hub powered by Langfuse, which feeds the Real-Time Dashboard.
+
+6.2 Complexity Scoring
+
+Every prompt is scored on five weighted dimensions before routing. Token Length accounts for 20 percent and measures the estimated input and output token count. Ambiguity accounts for 20 percent and measures the presence of underspecified or open-ended instructions. Domain Depth accounts for 25 percent and measures the density of specialized vocabulary in technical, legal, or scientific domains. Output Format accounts for 15 percent and distinguishes structured outputs like JSON or code from free-form text. Reasoning Required accounts for 20 percent and identifies multi-step logic, contradiction detection, and inference chains.
+
+6.3 Model Tier Mapping
+
+The Small Tier covers complexity scores 1 through 4. Models include Llama 3 8B, Claude Haiku, and Gemini Flash at approximately 0.0001 to 0.001 dollars per thousand tokens. Typical use cases are extraction, formatting, parsing, and summarisation.
+
+The Large Tier covers complexity scores 5 through 7. Models include GPT-4o and Claude Sonnet 3.5 at approximately 0.005 to 0.015 dollars per thousand tokens. Typical use cases are analysis, multi-document synthesis, and code generation.
+
+The Reasoning Tier covers complexity scores 8 through 10. Models include o3-mini and Claude Opus 4 at approximately 0.015 to 0.060 dollars per thousand tokens. Typical use cases are deep logic, contradiction detection, and complex planning.
+
+------------------------------------------------------------------------
+
+7. DETAILED FUNCTIONAL REQUIREMENTS
+
+FR-01: Complexity Classifier
+
+The system shall score every incoming prompt on a 1 to 10 scale before any LLM call is made. It shall use a lightweight ML classifier based on scikit-learn or a rule-based fallback with less than 5 milliseconds of inference time. It shall expose a scoring breakdown per dimension for display on the dashboard. It shall support manual override via explicit task metadata such as force_tier equals large.
+
+FR-02: Dynamic Model Router
+
+The system shall dispatch to the correct model tier based on the complexity score. It shall use LiteLLM as the unified model proxy for all provider calls. It shall support adding or removing models from tiers via a configuration file with no code changes required. It shall implement a budget cap that halts dispatch when cumulative run cost exceeds the configured threshold.
+
+FR-03: Semantic Cache
+
+The system shall compute an embedding for every incoming prompt and query the vector database. It shall return a cached response immediately when cosine similarity exceeds 0.95. It shall log cache hits and misses in Langfuse with a zero dollar cost entry for all cache hits.
+
+FR-04: Auto-Fallback and Self-Healing
+
+The system shall validate model output using DSPy assertions covering schema compliance, length, and coherence score. It shall automatically escalate to the next tier when an assertion fails, moving from Small to Large to Reasoning. It shall log all fallback events including the original tier, the failure reason, and the escalated tier. It shall not retry the same tier more than once per node.
+
+FR-05: Observability and Telemetry
+
+The system shall send a Langfuse trace for every pipeline node containing the node ID, model used, complexity score, tier selected, routing reason, latency in milliseconds, token count, cost in USD, and whether a fallback was triggered. It shall maintain a real-time dashboard refreshing every 5 seconds. It shall compute and display the total cost for RouteIQ versus the all-large baseline, the savings percentage, and the quality delta.
+
+FR-06: Demo Pipeline
+
+The system shall implement a 5-node LangGraph pipeline covering Query Parsing, Web Search Summarisation, Evidence Analysis, Contradiction Detection, and Final Formatting. It shall demonstrate all three model tiers being used across the five nodes. It shall display per-node model selection and cost in the live dashboard.
+
+------------------------------------------------------------------------
+
+8. NON-FUNCTIONAL REQUIREMENTS
+
+Router overhead per routing decision must be less than 10 milliseconds at the 99th percentile.
+
+Semantic cache lookup latency must be less than 20 milliseconds.
+
+Fallback escalation success rate must be 100 percent.
+
+System uptime during the demonstration must be 99.9 percent.
+
+The system must support at least 10 concurrent pipeline runs.
+
+Langfuse trace coverage must be 100 percent of all pipeline nodes.
+
+All API keys must be stored in environment variables only with no hardcoded secrets in the codebase.
+
+New model tiers must be addable via configuration file only with zero code changes required.
+
+CO2 metrics must be tracked alongside cost and logged per run.
+
+------------------------------------------------------------------------
+
+9. DEMO PIPELINE SPECIFICATION
+
+The demonstration pipeline generates a structured research report from a user query. Each node is deliberately designed to showcase a different complexity tier.
+
+Node 1 handles Query Parsing and Intent Extraction. Expected tier is Small. Example model is Claude Haiku. Complexity score is 2 out of 10. Estimated cost is 0.0003 dollars.
+
+Node 2 handles Web Search Result Summarisation. Expected tier is Small. Example model is Gemini Flash. Complexity score is 3 out of 10. Estimated cost is 0.0008 dollars.
+
+Node 3 handles Evidence Analysis and Synthesis. Expected tier is Large. Example model is GPT-4o. Complexity score is 7 out of 10. Estimated cost is 0.024 dollars.
+
+Node 4 handles Contradiction Detection and Fact Checking. Expected tier is Reasoning. Example model is o3-mini. Complexity score is 9 out of 10. Estimated cost is 0.041 dollars.
+
+Node 5 handles Final Report Formatting. Expected tier is Small. Example model is Claude Haiku. Complexity score is 2 out of 10. Estimated cost is 0.0005 dollars.
+
+Total RouteGen AI cost for this pipeline run: 0.066 dollars.
+Baseline cost using all GPT-4o: 0.312 dollars.
+Cost savings: 79 percent reduction.
+
+------------------------------------------------------------------------
+
+10. OBSERVABILITY DASHBOARD SPECIFICATION
+
+10.1 Required Dashboard Panels
+
+The Cost Panel shows total run cost for RouteIQ versus the all-large baseline, the savings percentage, and a per-node cost breakdown as a bar chart.
+
+The Routing Log Table shows node ID, model used, complexity score, tier selected, latency in milliseconds, cost in USD, and whether a fallback was triggered for every node in the run.
+
+The Quality Panel shows BERTScore and BLEU delta versus the baseline per node.
+
+The Cache Panel shows cache hit rate, number of queries served at zero cost, and total savings from cache hits.
+
+The CO2 Panel shows estimated GPU energy per run and CO2 equivalent saved versus the all-large baseline.
+
+10.2 Required Langfuse Trace Fields
+
+Every trace must include the trace ID, session ID, node ID, model used, tier selected, complexity score from 1 to 10, score breakdown across the five dimensions, routing reason as a human-readable string, input token count, output token count, total token count, cost in USD, latency in milliseconds, whether a fallback was triggered, the fallback source tier if applicable, the fallback reason if applicable, whether the response was a cache hit, the cache similarity score if applicable, and estimated CO2 in grams.
+
+------------------------------------------------------------------------
+
+11. FEASIBILITY AND RISK ANALYSIS
+
+11.1 Technical Feasibility
+
+All required frameworks including LangGraph, RouteLLM, LiteLLM, and Langfuse are mature, production-tested, and open source. All LLM tiers are accessible via existing public APIs with no infrastructure setup required. Complexity classification is solvable with rule-based logic for the hackathon scope, with a fine-tuned ML classifier as a post-hackathon enhancement. The system can be integrated into existing AI applications without major infrastructure changes and supports real-time routing decisions with minimal latency overhead.
+
+11.2 Risk Register
+
+Risk 1: The classifier mis-routes a high-complexity prompt to the Small tier, causing quality degradation. Likelihood is medium, severity is high. Mitigation is mandatory DSPy assertion fallback.
+
+Risk 2: API rate limits are hit during the demo, causing pipeline stalls. Likelihood is medium, severity is medium. Mitigation is using a local Ollama Small tier as a backup.
+
+Risk 3: Langfuse SaaS experiences downtime during the demo, eliminating observability. Likelihood is low, severity is medium. Mitigation is self-hosting Langfuse locally as a backup.
+
+Risk 4: Semantic cache returns a false positive, serving a wrong cached answer. Likelihood is low, severity is high. Mitigation is setting the similarity threshold at 0.95 or higher and logging all cache hits for review.
+
+------------------------------------------------------------------------
+
+12. PRODUCT ROADMAP
+
+v1.0 (Hackathon Day): 5-node demo pipeline, 3-tier model routing, Langfuse observability, cost dashboard, auto-fallback, and semantic cache.
+
+v1.5 (2 weeks post-hackathon): Fine-tuned complexity classifier using distilBERT, per-run budget cap UI, multi-provider fallback chain, and SLA-aware tier selection.
+
+v2.0 (1 month post-hackathon): Plug-in Python SDK installable via pip, feedback loop for auto-calibration of the classifier, CO2 dashboard, and enterprise cost alerts.
+
+v3.0 (3 months post-hackathon): Multi-tenant SaaS, REST API for external pipelines, custom tier configuration UI, and an LLM performance leaderboard per task type.
+
+------------------------------------------------------------------------
+
+13. HACKATHON ACCEPTANCE CRITERIA
+
+AC-01: Pipeline runs end-to-end with at least 3 distinct models across 5 or more nodes.
+
+AC-02: Complexity classifier routes correctly for at least 80 percent of test prompts.
+
+AC-03: Auto-fallback is triggered and logged for at least one pipeline run during the demo.
+
+AC-04: Langfuse dashboard is live during the demo showing all required trace fields.
+
+AC-05: Cost savings dashboard shows at least 60 percent reduction versus the all-large baseline.
+
+AC-06: Quality delta shows less than 10 percent degradation versus the baseline by BERTScore.
+
+AC-07: Semantic cache serves at least one repeated query at zero cost during the demo.
+
+AC-08: Budget kill-switch is functional and the pipeline halts when the cap is exceeded.
+
+------------------------------------------------------------------------
+
+14. GLOSSARY
+
+LLM: Large Language Model, referring to AI models such as GPT-4o, Claude, and Gemini.
+
+Routing Layer: Middleware that intercepts prompts and selects the appropriate LLM before any API call is made.
+
+Complexity Score: A numerical rating from 1 to 10 measuring a task's difficulty across five weighted dimensions.
+
+Model Tier: A group of LLMs with similar cost and capability profiles, organised as Small, Large, or Reasoning.
+
+Semantic Cache: A vector database storing past prompt embeddings to return cached answers for similar future queries.
+
+Auto-Fallback: Automatic escalation to a stronger model when the current model's output fails quality assertions.
+
+Langfuse: An open-source LLM observability platform for tracing, cost tracking, and performance monitoring.
+
+LiteLLM: A unified Python proxy for calling over 100 LLM APIs through a single interface.
+
+LangGraph: A framework for building stateful, multi-step LLM pipelines as directed graphs.
+
+DSPy: A framework for programming LLMs with typed assertions instead of hand-written prompts.
+
+BERTScore: An NLP metric measuring semantic similarity between generated output and a reference text.
+
+------------------------------------------------------------------------
+End of PRD - Team Neural Nexus - RouteGen AI - HACKINDIA 2025

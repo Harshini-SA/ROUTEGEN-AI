@@ -1,0 +1,332 @@
+TECH STACK DOCUMENT
+RouteGen AI - Intelligent Model Routing for Cost Optimization
+
+Team: Neural Nexus
+Track: Track 03 - Intelligent Model Routing (Open Stack)
+Event: HACKINDIA / MAKEATHON 3.0
+Version: v1.0
+Date: June 2025
+
+------------------------------------------------------------------------
+
+1. TECH STACK OVERVIEW
+
+RouteGen AI is composed of five distinct technology layers. Each layer was selected for production maturity, open-source availability, and direct alignment with the hackathon's recommended tools. Every component can be swapped via a configuration file to support future model additions without touching application code.
+
+The five layers are as follows.
+
+Frontend and UI uses React.js, Tailwind CSS, and Flutter for the web portal, real-time dashboard, and mobile application.
+
+Backend and API uses Python with FastAPI, PostgreSQL, and MongoDB for core routing logic, the API gateway, and data storage.
+
+AI Orchestration uses LangGraph, LiteLLM, and RouteLLM for pipeline execution, the unified model proxy, and the routing decision engine.
+
+AI and Machine Learning uses Scikit-learn, DSPy, and Sentence-Transformers for the complexity classifier, prompt optimization, and semantic embeddings.
+
+Observability uses Langfuse and Chroma DB for LLM tracing, cost dashboards, and the semantic cache.
+
+------------------------------------------------------------------------
+
+2. FRONTEND LAYER
+
+2.1 Technology Choices
+
+React.js version 18 serves as the web portal and dashboard UI. It is the industry-standard single-page application framework and provides fast rendering for real-time dashboard updates delivered via WebSocket connections.
+
+Tailwind CSS version 3 handles all UI styling and design. It is a utility-first CSS framework that enables rapid prototyping and is fully responsive, removing the overhead of a custom design system during the hackathon.
+
+Recharts version 2 is used for all cost and quality charts in the dashboard. It is a declarative React charting library that integrates natively with React state, making it ideal for live data visualisation.
+
+Flutter version 3 handles the mobile application. It produces cross-platform iOS and Android apps from a single codebase and renders natively on both platforms.
+
+Socket.IO Client version 4 provides the real-time WebSocket connection from the dashboard to the FastAPI backend, enabling live streaming of Langfuse metrics as they arrive.
+
+2.2 Dashboard Panels
+
+The Cost Comparison Panel shows total RouteIQ cost versus the all-large baseline as a bar chart built with Recharts.
+
+The Routing Log Table is a live-updating table showing node ID, model used, tier selected, cost in USD, and latency in milliseconds for every completed pipeline node.
+
+The Quality Delta Panel shows BERTScore comparison per node versus the baseline as a line chart.
+
+The Cache Stats Panel displays hit rate, number of queries served at zero cost, and total savings from the semantic cache.
+
+The CO2 Impact Panel shows estimated energy saved and CO2 equivalent compared to running the same pipeline entirely on frontier models.
+
+------------------------------------------------------------------------
+
+3. BACKEND LAYER
+
+3.1 Core API and Logic
+
+Python 3.11 is the core programming language. It has the widest compatibility with LLM libraries and provides async/await support and type hints for reliability at scale.
+
+FastAPI version 0.111 is the REST API gateway and handles all endpoints. It is an async ASGI framework with automatic OpenAPI documentation generation, WebSocket support for streaming, and high throughput under concurrent load.
+
+Uvicorn is the ASGI server running FastAPI. It is a high-performance server that supports multi-worker scaling for production deployment.
+
+Pydantic version 2 handles all request and response validation. It provides type-safe validation and auto-serialisation and is tightly integrated with FastAPI.
+
+PostgreSQL version 16 is the relational database. It stores structured routing logs, cost records, and pipeline run metadata with full ACID compliance.
+
+MongoDB version 7 is the document store. It stores raw prompt and response pairs, trace blobs, and other flexible-schema data that does not fit neatly into a relational model.
+
+SQLAlchemy version 2 is the async ORM for PostgreSQL. It provides clean database migrations via Alembic and type-safe query building.
+
+Motor version 3 is the async MongoDB driver. It is the native async driver for Python and integrates cleanly with the FastAPI async stack.
+
+Redis version 7 serves as the session cache and rate-limiting layer. It stores routing decisions in memory and enforces the per-run budget cap.
+
+3.2 Core API Endpoints
+
+POST /route accepts a prompt and task metadata, runs the classifier, and dispatches to the appropriate model. It returns the response, model used, tier selected, cost, and latency.
+
+POST /pipeline/run executes a full LangGraph pipeline and returns per-node results along with cost breakdown and savings versus the baseline.
+
+GET /dashboard/metrics fetches aggregated cost, quality, and routing statistics for the dashboard.
+
+GET /logs/{run_id} fetches all Langfuse traces for a specific pipeline run as a list of trace objects.
+
+GET /cache/stats returns semantic cache hit rate, cost saved, and total queries processed.
+
+WebSocket /ws/live streams real-time routing events to the dashboard as a JSON line event stream.
+
+------------------------------------------------------------------------
+
+4. AI ORCHESTRATION LAYER
+
+4.1 Technology Choices
+
+LangGraph version 0.2 is the pipeline orchestration framework. It uses a state-machine approach to multi-step AI pipelines where each node is an intercept point for RouteGen AI. It is built on LangChain and supports complex conditional edges and shared state across nodes.
+
+LiteLLM version 1.x is the unified LLM proxy. It provides a single Python interface for over 100 LLM APIs including OpenAI, Anthropic, Google, and local Ollama. It handles authentication, retries, and cost tracking automatically.
+
+RouteLLM is the router decision engine. It is an open-source router developed by LMSys that supports matrix factorization and BERT-based routing strategies. It is production-validated and directly recommended in the problem statement.
+
+DSPy version 2 handles prompt optimization and quality assertions. It allows programmatic prompt compilation and defines typed output assertions that trigger the auto-fallback mechanism. It replaces brittle hand-written f-string prompts with compiled, optimized versions.
+
+Ollama hosts Llama 3 8B locally for Small tier inference. It eliminates API cost and latency for all simple tasks and runs on both GPU and CPU hardware.
+
+4.2 LangGraph Pipeline Node Structure
+
+Each node in the LangGraph StateGraph follows a consistent eight-step pattern.
+
+Step 1: The node receives the current pipeline state including the prompt, context, and conversation history.
+
+Step 2: The RouteGen AI Classifier scores the prompt on a scale of 1 to 10 using the five-dimension scoring model.
+
+Step 3: The Semantic Cache is checked. If a similar prompt embedding exists with cosine similarity above 0.95, the cached result is returned immediately and the remaining steps are skipped.
+
+Step 4: LiteLLM dispatches the prompt to the correct model tier via RouteLLM based on the complexity score.
+
+Step 5: DSPy assertions validate the output against the expected schema, length, and coherence thresholds.
+
+Step 6: If any assertion fails, the tier is escalated and the prompt is re-dispatched to the next higher tier.
+
+Step 7: A Langfuse trace is logged with all required metadata fields.
+
+Step 8: The pipeline state is updated with the node's output and the next node is triggered.
+
+4.3 Model Pool Configuration
+
+Small Tier models for complexity scores 1 through 4:
+Claude Haiku 3 via Anthropic API at 0.00025 dollars per thousand input tokens and 0.00125 dollars per thousand output tokens.
+Gemini 1.5 Flash via Google AI API at 0.000075 dollars per thousand input tokens and 0.0003 dollars per thousand output tokens.
+Llama 3 8B via local Ollama at zero dollars (local inference).
+
+Large Tier models for complexity scores 5 through 7:
+GPT-4o via OpenAI API at 0.005 dollars per thousand input tokens and 0.015 dollars per thousand output tokens.
+Claude Sonnet 3.7 via Anthropic API at 0.003 dollars per thousand input tokens and 0.015 dollars per thousand output tokens.
+
+Reasoning Tier models for complexity scores 8 through 10:
+o3-mini via OpenAI API at 0.0011 dollars per thousand input tokens and 0.0044 dollars per thousand output tokens.
+Claude Opus 4 via Anthropic API at 0.015 dollars per thousand input tokens and 0.075 dollars per thousand output tokens.
+
+------------------------------------------------------------------------
+
+5. AI AND MACHINE LEARNING LAYER
+
+5.1 Technology Choices
+
+Scikit-learn version 1.5 powers the complexity classifier. It is a lightweight ML library suitable for logistic regression or gradient boosting-based classification with less than 5 milliseconds of inference time per prompt.
+
+Sentence-Transformers version 3 converts prompts into dense vector embeddings for the semantic cache. It supports multilingual inputs and integrates directly with Chroma DB for similarity search.
+
+DSPy version 2 handles typed assertions and fallback logic. It is used to declare expected output schemas and compile optimized prompts that improve output reliability across all model tiers.
+
+Chroma DB version 0.5 is the vector database for the semantic cache. It is embedded with no external infrastructure required, supports exact and approximate nearest-neighbor search, and integrates natively with Sentence-Transformers.
+
+BERTScore is the quality evaluation metric used for the quality delta dashboard. It measures semantic similarity between the generated output and a ground truth reference to quantify quality differences across model tiers.
+
+NLTK and SpaCy version 3.7 handle text preprocessing including tokenisation and part-of-speech tagging used during complexity feature extraction.
+
+5.2 Complexity Classifier Features
+
+The classifier extracts eight features from each incoming prompt before producing the complexity score.
+
+token_count is the estimated input token count produced by tiktoken and serves as a proxy for task size.
+
+sentence_count is the total number of sentences and serves as a structural complexity proxy.
+
+question_count is the number of distinct sub-questions in the prompt and indicates multi-part task complexity.
+
+technical_term_ratio is the ratio of domain-specific vocabulary identified by SpaCy named entity recognition and indicates domain depth.
+
+structured_output_required is a binary flag set when JSON, code, or table output is detected in the prompt.
+
+negation_count is the number of negation words and constraint phrases, which indicate contradiction or boundary conditions.
+
+conditional_count is the number of conditional logic chains such as if, unless, and given, which indicate reasoning complexity.
+
+avg_word_length is the average word length across the prompt and serves as a proxy for vocabulary sophistication.
+
+------------------------------------------------------------------------
+
+6. OBSERVABILITY AND DATA LAYER
+
+6.1 Technology Choices
+
+Langfuse is the LLM observability platform. It provides tracing, cost tracking, latency measurement, and model comparison dashboards purpose-built for LLM pipelines. It is directly recommended in the problem statement and can be used as a cloud service or self-hosted locally.
+
+Chroma DB also serves as the semantic cache vector store in this layer, storing prompt embeddings for similarity search with no external infrastructure required during the hackathon.
+
+Prometheus scrapes system metrics from the FastAPI metrics endpoint and tracks router latency, cache hit rate, and fallback rate over time.
+
+Grafana visualises Prometheus metrics and complements Langfuse for infrastructure-level visibility into the routing system.
+
+Sentry captures exceptions in routing logic and pipeline nodes and sends alerts when fallback storms or unusual error rates are detected.
+
+6.2 Langfuse Trace Schema
+
+Every pipeline node produces a Langfuse trace containing the following fields.
+
+trace_id is a UUID uniquely identifying this routing event.
+session_id is a UUID grouping all traces from a single pipeline run.
+node_id is the LangGraph node name such as evidence_analysis.
+model_used is the exact model ID dispatched such as gpt-4o.
+tier_selected is one of small, large, or reasoning.
+complexity_score is a float between 1.0 and 10.0.
+score_breakdown is a JSON object containing per-dimension scores for token length, ambiguity, domain, format, and reasoning.
+routing_reason is a human-readable string explaining why the tier was selected.
+input_tokens is the token count of the prompt sent to the model.
+output_tokens is the token count of the model response.
+cost_usd is the exact USD cost of this call.
+latency_ms is the end-to-end latency for this node in milliseconds.
+fallback_triggered is a boolean indicating whether a DSPy assertion failed.
+fallback_from_tier is the original tier before escalation or null if no fallback occurred.
+fallback_reason is the assertion failure message that triggered escalation or null if no fallback occurred.
+cache_hit is a boolean indicating whether this response was served from the semantic cache.
+cache_similarity_score is the cosine similarity of the matched cached prompt or null if a cache miss.
+co2_grams is the estimated CO2 equivalent for this API call in grams.
+
+------------------------------------------------------------------------
+
+7. INFRASTRUCTURE AND DEVOPS
+
+7.1 Technology Choices
+
+Docker version 26 packages all services including FastAPI, Chroma, Redis, and Langfuse into isolated containers, creating a reproducible environment for the demo.
+
+Docker Compose version 2 orchestrates the local stack. A single docker-compose.yml file brings up the entire system with one command and zero manual configuration.
+
+GitHub Actions provides the CI/CD pipeline with automated tests on every push, including linting and type checking to prevent broken builds from reaching the demo.
+
+Pytest version 8 is the test framework. It covers unit tests for the classifier, router, and fallback logic, as well as integration tests for full pipeline runs.
+
+Python-dotenv manages secrets by loading all API keys from a .env file into environment variables. The .env file is excluded from version control via .gitignore.
+
+Nginx serves as the reverse proxy, routing traffic from port 80 to both the FastAPI backend and the React frontend in production deployment.
+
+7.2 Docker Compose Services
+
+routegen-api runs the FastAPI application using Python 3.11 and Uvicorn.
+routegen-ui serves the React dashboard as a static build behind Nginx.
+chroma runs the Chroma vector database for the semantic cache.
+redis runs the in-memory cache and rate-limiting layer.
+postgres runs the relational database for structured routing logs.
+mongo runs the document store for raw traces.
+langfuse runs a self-hosted Langfuse instance as a fallback when the cloud service is unavailable.
+
+------------------------------------------------------------------------
+
+8. SECURITY CONSIDERATIONS
+
+All LLM API keys are stored in .env files and are never committed to version control.
+
+FastAPI endpoint authentication uses a Bearer token for the demo environment.
+
+The budget cap is enforced server-side so the client cannot bypass the spending limit.
+
+No personally identifiable information is stored in MongoDB or PostgreSQL. Raw prompts are hashed before logging.
+
+Chroma vector embeddings are dense numerical representations only and do not allow recovery of the original raw text.
+
+Redis rate-limiting prevents denial-of-service attacks on the routing endpoint.
+
+------------------------------------------------------------------------
+
+9. DEVELOPMENT ENVIRONMENT SETUP
+
+9.1 Prerequisites
+
+Python 3.11 or higher with pip or poetry installed.
+Node.js 20 or higher with npm for the React dashboard.
+Docker Desktop 4.x for the docker-compose stack.
+Ollama installed optionally for local Small tier inference.
+API keys for OpenAI, Anthropic, Google AI, and Langfuse stored in the .env file.
+
+9.2 Quick Start Commands
+
+Clone and enter the repository:
+git clone https://github.com/neural-nexus/routegen-ai
+cd routegen-ai
+
+Copy the environment template and fill in API keys:
+cp .env.example .env
+
+Start all services:
+docker-compose up --build
+
+Run the demo pipeline:
+curl -X POST http://localhost:8000/pipeline/run -H "Content-Type: application/json" -d "{\"query\": \"What is the current state of AI regulation in the EU?\"}"
+
+Open the dashboard at http://localhost:3000
+
+------------------------------------------------------------------------
+
+10. FULL STACK SUMMARY
+
+Frontend layer:
+React.js 18 for the web dashboard and portal. License: MIT.
+Tailwind CSS 3 for UI styling. License: MIT.
+Flutter 3 for the mobile application. License: BSD.
+
+Backend layer:
+Python 3.11 with FastAPI for the API gateway and routing logic. License: MIT.
+PostgreSQL 16 for the structured data store. License: PostgreSQL License.
+MongoDB 7 for the document and trace store. License: SSPL.
+Redis 7 for caching and rate limiting. License: BSD.
+
+AI Orchestration layer:
+LangGraph 0.2 for the pipeline state machine. License: MIT.
+LiteLLM 1.x for the unified LLM proxy. License: MIT.
+RouteLLM for the router decision engine. License: Apache 2.0.
+DSPy 2.x for prompt optimization and assertions. License: MIT.
+
+AI and Machine Learning layer:
+Scikit-learn 1.5 for the complexity classifier. License: BSD.
+Sentence-Transformers for semantic embeddings. License: Apache 2.0.
+Ollama for local Small tier inference. License: MIT.
+
+Observability layer:
+Langfuse for LLM tracing and the cost dashboard. License: MIT.
+Chroma DB for the semantic cache vector store. License: Apache 2.0.
+Prometheus and Grafana for system metrics dashboards. License: Apache 2.0.
+
+DevOps layer:
+Docker and Docker Compose for the containerised local stack. License: Apache 2.0.
+GitHub Actions for the CI/CD pipeline. License: GitHub Terms of Service.
+Pytest 8 for the test suite. License: MIT.
+
+------------------------------------------------------------------------
+End of Tech Stack Document - Team Neural Nexus - RouteGen AI - HACKINDIA 2025
