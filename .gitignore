@@ -42,3 +42,5 @@ coverage.xml
 # Misc
 *.log
 .agents/
+temp_python/
+

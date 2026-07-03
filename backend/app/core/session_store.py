@@ -20,10 +20,34 @@ class Session:
 
 
 class SessionStore:
-    """Supabase-backed conversation store."""
+    """Supabase-backed conversation store with local in-memory fallback."""
+
+    def __init__(self):
+        # In-memory session store: user_id -> {session_id: Session}
+        self._local_sessions: Dict[str, Dict[str, Session]] = {}
+
+    def _get_local_sessions(self, user_id: str) -> Dict[str, Session]:
+        if user_id not in self._local_sessions:
+            self._local_sessions[user_id] = {}
+        return self._local_sessions[user_id]
 
     def get_or_create(self, user_id: str, session_id: Optional[str] = None) -> Session:
         """Return an existing session or create a new one."""
+        if not supabase:
+            sessions = self._get_local_sessions(user_id)
+            if session_id and session_id in sessions:
+                return sessions[session_id]
+            new_id = session_id or str(uuid.uuid4())
+            new_session = Session(
+                session_id=new_id,
+                user_id=user_id,
+                title="New Chat",
+                created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                messages=[]
+            )
+            sessions[new_id] = new_session
+            return new_session
+
         if session_id:
             res = supabase.table("sessions").select("*").eq("id", session_id).eq("user_id", user_id).execute()
             if res.data:
@@ -52,6 +76,16 @@ class SessionStore:
 
     def append_message(self, user_id: str, session_id: str, role: str, content: str) -> None:
         """Append a message to a session. Auto-generates title from first user message."""
+        if not supabase:
+            sessions = self._get_local_sessions(user_id)
+            if session_id not in sessions:
+                return
+            session = sessions[session_id]
+            session.messages.append({"role": role, "content": content})
+            if role == "user" and session.title == "New Chat":
+                session.title = content[:60] + ("..." if len(content) > 60 else "")
+            return
+
         # Verify session belongs to user
         session_res = supabase.table("sessions").select("*").eq("id", session_id).eq("user_id", user_id).execute()
         if not session_res.data:
@@ -75,6 +109,13 @@ class SessionStore:
 
     def get_recent_history(self, user_id: str, session_id: str, n: int = 10) -> List[Dict[str, str]]:
         """Return the last N messages for context injection."""
+        if not supabase:
+            sessions = self._get_local_sessions(user_id)
+            if session_id not in sessions:
+                return []
+            messages = sessions[session_id].messages
+            return messages[-n:] if messages else []
+
         session_res = supabase.table("sessions").select("id").eq("id", session_id).eq("user_id", user_id).execute()
         if not session_res.data:
             return []
@@ -85,6 +126,19 @@ class SessionStore:
 
     def list_sessions(self, user_id: str) -> List[Dict]:
         """Return all sessions for a user sorted by most recent first."""
+        if not supabase:
+            sessions = self._get_local_sessions(user_id)
+            # Sort by created_at desc or order of creation. Let's just sort by session ID or keep them ordered
+            return [
+                {
+                    "session_id": s.session_id,
+                    "title": s.title,
+                    "created_at": s.created_at,
+                    "message_count": len(s.messages),
+                }
+                for s in reversed(list(sessions.values()))
+            ]
+
         res = supabase.table("sessions").select("*, messages(count)").eq("user_id", user_id).order("created_at", desc=True).execute()
         sessions = res.data
         
@@ -100,6 +154,18 @@ class SessionStore:
 
     def get_session(self, user_id: str, session_id: str) -> Optional[Dict]:
         """Return full session data including messages."""
+        if not supabase:
+            sessions = self._get_local_sessions(user_id)
+            if session_id not in sessions:
+                return None
+            s = sessions[session_id]
+            return {
+                "session_id": s.session_id,
+                "title": s.title,
+                "created_at": s.created_at,
+                "messages": s.messages,
+            }
+
         session_res = supabase.table("sessions").select("*").eq("id", session_id).eq("user_id", user_id).execute()
         if not session_res.data:
             return None

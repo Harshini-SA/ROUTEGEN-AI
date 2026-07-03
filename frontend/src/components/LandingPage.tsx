@@ -239,27 +239,24 @@ const LandingPage = () => {
     setAuthError(null);
 
     try {
-      // If Supabase keys exist, perform actual network auth
-      if (import.meta.env.VITE_SUPABASE_URL) {
-        if (authMode === 'login') {
-          const { error: signInError } = await supabase.auth.signInWithPassword({
-            email,
-            password
-          });
-          if (signInError) throw signInError;
-        } else {
-          const { error: signUpError } = await supabase.auth.signUp({
-            email,
-            password,
-            options: {
-              data: {
-                first_name: firstName,
-                last_name: lastName,
-              }
+      if (authMode === 'login') {
+        const { error: signInError } = await supabase.auth.signInWithPassword({
+          email,
+          password
+        });
+        if (signInError) throw signInError;
+      } else {
+        const { error: signUpError } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: {
+              first_name: firstName,
+              last_name: lastName,
             }
-          });
-          if (signUpError) throw signUpError;
-        }
+          }
+        });
+        if (signUpError) throw signUpError;
       }
       triggerOnboardingCheck();
     } catch (err: any) {
@@ -273,15 +270,15 @@ const LandingPage = () => {
     setAuthLoading(provider);
     setAuthError(null);
     try {
-      if (import.meta.env.VITE_SUPABASE_URL) {
-        const { error: oauthError } = await supabase.auth.signInWithOAuth({
-          provider,
-          options: {
-            redirectTo: window.location.origin + '/chat'
-          }
-        });
-        if (oauthError) throw oauthError;
-      } else {
+      const { error: oauthError } = await supabase.auth.signInWithOAuth({
+        provider,
+        options: {
+          redirectTo: window.location.origin + '/chat'
+        }
+      });
+      if (oauthError) throw oauthError;
+
+      if (!import.meta.env.VITE_SUPABASE_URL) {
         // Simulation for Offline Demo Mode
         setTimeout(() => {
           setAuthLoading(null);
