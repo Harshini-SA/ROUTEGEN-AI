@@ -31,6 +31,9 @@ class PipelineState(TypedDict):
     total_cost: float
     routing_logs: List[Dict[str, Any]]
     baseline_model: str  # Optional flag for comparison
+    rag_used: bool
+    rag_chunk_count: int
+    rag_sources: List[str]
 
 
 async def base_node(state: PipelineState, node_name: str, prompt: str, assertions: List[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -90,6 +93,11 @@ async def base_node(state: PipelineState, node_name: str, prompt: str, assertion
     # 1. Classification — use context-aware scoring
     complexity = classifier.score_prompt_in_context(prompt, conversation_history)
 
+    # 1b. RAG queries require more synthesis — bump complexity so they land on a more capable tier
+    if state.get("rag_used"):
+        complexity.score = min(10.0, complexity.score + 1)
+        complexity.tier = classifier.tier_for_score(complexity.score)
+
     # 2. Cache Check (Only for the first node/query parsing usually, or independent full prompts)
     cache_hit = False
     cache_similarity = None
@@ -123,7 +131,10 @@ async def base_node(state: PipelineState, node_name: str, prompt: str, assertion
         "latency_ms": latency,
         "cost_usd": 0.0 if cache_hit else result.get("cost_usd", 0.0),
         "fallback_triggered": False if cache_hit else result.get("fallback_triggered", False),
-        "cache_hit": cache_hit
+        "cache_hit": cache_hit,
+        "rag_used": state.get("rag_used", False),
+        "rag_chunk_count": state.get("rag_chunk_count", 0),
+        "rag_sources": state.get("rag_sources", [])
     }
 
     return {

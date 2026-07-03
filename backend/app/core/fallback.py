@@ -61,28 +61,35 @@ class FallbackManager:
         original_tier = current_tier
         fallback_reason = None
         
+        from app.config import settings
+        
         while current_tier:
-            logger.info(f"Dispatching to tier: {current_tier}")
-            result = await router.dispatch(prompt, complexity, tier_override=current_tier)
-            
-            if not result["success"]:
-                # API Error -> fallback
-                fallback_reason = f"API Error: {result['error']}"
-                pass_assertions = False
-            else:
-                pass_assertions = self._run_assertions(result["content"], assertions)
-                if not pass_assertions:
-                    fallback_reason = "DSPy Assertion Failed"
-            
-            if pass_assertions and result["success"]:
-                result["fallback_triggered"] = fallback_occurred
-                result["fallback_from_tier"] = original_tier if fallback_occurred else None
-                result["fallback_reason"] = fallback_reason if fallback_occurred else None
-                return result
+            models_to_try = settings.get_models_for_tier(current_tier)
+            for model_id in models_to_try:
+                logger.info(f"Dispatching to tier: {current_tier} (Model: {model_id})")
+                result = await router.dispatch(prompt, complexity, tier_override=current_tier, model_override=model_id)
                 
-            # If we reach here, it failed. Try to escalate.
-            logger.warning(f"Tier {current_tier} failed ({fallback_reason}). Attempting escalation.")
-            fallback_occurred = True
+                if not result["success"]:
+                    # API Error -> fallback
+                    fallback_reason = f"API Error: {result['error']}"
+                    pass_assertions = False
+                else:
+                    pass_assertions = self._run_assertions(result["content"], assertions)
+                    if not pass_assertions:
+                        fallback_reason = "DSPy Assertion Failed"
+                
+                if pass_assertions and result["success"]:
+                    result["fallback_triggered"] = fallback_occurred
+                    result["fallback_from_tier"] = original_tier if fallback_occurred else None
+                    result["fallback_reason"] = fallback_reason if fallback_occurred else None
+                    return result
+                    
+                # If we reach here, it failed. Try next model in the same tier.
+                logger.warning(f"Model {model_id} in tier {current_tier} failed ({fallback_reason}). Attempting backup.")
+                fallback_occurred = True
+
+            # If all models in the tier failed, escalate to the next tier
+            logger.warning(f"All models in tier {current_tier} failed. Attempting escalation.")
             
             next_tier = self.tier_progression.get(current_tier)
             if not next_tier:

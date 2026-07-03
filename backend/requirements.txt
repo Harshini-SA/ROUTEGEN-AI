@@ -18,7 +18,7 @@ redis[hiredis]==5.2.1
 alembic==1.14.1
 
 # --- LLM & AI Orchestration ---
-litellm==1.55.8
+litellm>=1.90.2
 langgraph==0.2.60
 langchain-core==0.3.28
 # dspy-ai==2.5.43  # Not used yet — uncomment when DSPy assertions are implemented
@@ -30,8 +30,14 @@ nltk==3.9.1
 tiktoken==0.8.0
 
 # --- Semantic Cache & Embeddings ---
-# chromadb==0.5.23  # Requires C++ Build Tools on Windows — uncomment if available
-# sentence-transformers==3.3.1  # Only needed with chromadb
+chromadb==1.5.9
+sentence-transformers==5.6.0
+
+# --- RAG File Ingestion ---
+pypdf==6.14.2
+python-pptx==1.0.2
+pillow==12.3.0
+pytesseract==0.3.13  # requires the Tesseract OCR binary on PATH — falls back to Gemini Vision if absent
 
 # --- Observability ---
 langfuse==2.55.0
@@ -41,6 +47,7 @@ langfuse==2.55.0
 
 # --- WebSocket ---
 python-socketio==5.12.0
+supabase>=2.11.0
 
 # --- Testing ---
 pytest==8.3.4

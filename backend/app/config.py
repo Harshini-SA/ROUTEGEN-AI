@@ -23,9 +23,8 @@ class Settings(BaseSettings):
     anthropic_api_key: Optional[str] = Field(default=None, alias="ANTHROPIC_API_KEY")
     gemini_api_key: Optional[str] = Field(default=None, alias="GEMINI_API_KEY")
 
-    # ── AWS Bedrock (Claude Models) ─────────────────────────────────────
-    aws_bedrock_api_key: Optional[str] = Field(default=None, alias="AWS_BEDROCK_API_KEY")
-    aws_region_name: str = Field(default="ap-south-1", alias="AWS_REGION_NAME")
+    # ── Cerebras API ────────────────────────────────────────────────────
+    cerebras_api_key: Optional[str] = Field(default=None, alias="CEREBRAS_API_KEY")
 
     # ── Database URLs ───────────────────────────────────────────────────
     postgres_url: str = Field(
@@ -63,21 +62,17 @@ class Settings(BaseSettings):
     supabase_key: Optional[str] = Field(default=None, alias="SUPABASE_KEY")
     supabase_jwt_secret: Optional[str] = Field(default=None, alias="SUPABASE_JWT_SECRET")
 
-    # ── Model Tier Configuration (Free + AWS Bedrock) ────────────────────
+    # ── Model Tier Configuration ─────────────────────────────────────────
     # Maps tier names to lists of model identifiers (LiteLLM format)
     small_tier_models: list[str] = [
         "groq/llama-3.1-8b-instant",                    # Free, extremely fast
-        "gemini/gemini-1.5-flash-latest",               # Free tier available
-        "bedrock/anthropic.claude-3-5-haiku-20241022-v1:0",  # Claude Haiku (AWS $200 credits)
     ]
     large_tier_models: list[str] = [
-        "gemini/gemini-1.5-pro-latest",                 # Generous free tier
-        "groq/mixtral-8x7b-32768",                      # Free
-        "bedrock/anthropic.claude-sonnet-4-5-20250514-v1:0",  # Claude Sonnet 4.5 (AWS credits)
+        "gemini/gemini-3.5-flash",                      # Fast, strong capability
     ]
     reasoning_tier_models: list[str] = [
-        "groq/llama-3.3-70b-versatile",                 # Free, strong reasoning
-        "bedrock/anthropic.claude-sonnet-4-5-20250514-v1:0",  # Claude Sonnet 4.5 (AWS credits)
+        "cerebras/gpt-oss-120b",                        # Cerebras GPT-OSS 120B
+        "groq/llama-3.3-70b-versatile",                 # Fallback backup
     ]
 
     # ── Tier Score Boundaries ───────────────────────────────────────────

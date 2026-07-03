@@ -1,5 +1,5 @@
 import React from 'react';
-import { List, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { List, AlertCircle, CheckCircle2, FileText } from 'lucide-react';
 
 const RoutingLogTable = ({ logs }: { logs: any[] }) => {
   return (
@@ -30,12 +30,18 @@ const RoutingLogTable = ({ logs }: { logs: any[] }) => {
                     <span>Escalated</span>
                   </span>
                 )}
+                {log.rag_used && (
+                  <span className="px-2 py-0.5 bg-secondary/20 text-secondary border border-secondary/30 rounded text-xs flex items-center space-x-1">
+                    <FileText className="w-3 h-3" />
+                    <span>RAG: {log.rag_chunk_count} chunks from {(log.rag_sources || []).join(', ')}</span>
+                  </span>
+                )}
               </div>
-              
+
               <div className="text-xs text-text-secondary bg-surface/50 p-2 rounded border border-border/50">
-                <span className="font-semibold text-primary">Routing Logic: </span> 
-                {log.tier_selected === 'baseline' 
-                  ? 'Baseline Comparison Mode Active → Bypassed Routing' 
+                <span className="font-semibold text-primary">Routing Logic: </span>
+                {log.tier_selected === 'baseline'
+                  ? 'Baseline Comparison Mode Active → Bypassed Routing'
                   : `Complexity Score ${log.complexity_score.toFixed(1)} → ${log.tier_selected.toUpperCase()} Tier → Selected ${log.model_used.split('/').pop()}`}
               </div>
             </div>

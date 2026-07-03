@@ -1,15 +1,42 @@
+import os
 import uuid
+import tempfile
 from typing import Dict, Any, List, Optional
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, UploadFile, File, Form
 from pydantic import BaseModel
 from app.core.classifier import classifier
 from app.core.fallback import fallback_manager
 from app.pipeline.demo_pipeline import demo_pipeline
 from app.core.cache import semantic_cache
 from app.core.session_store import session_store
+from app.core.rag_store import rag_store
+from app.core.file_processor import extract_text
 from app.api.auth import get_current_user
 
 router = APIRouter()
+
+SUPPORTED_UPLOAD_TYPES = {"pdf", "pptx", "jpg", "jpeg", "png"}
+
+
+def _build_rag_context(sid: str, query: str) -> Dict[str, Any]:
+    """Retrieve relevant chunks for a session (if any docs were uploaded) and
+    build the CONTEXT-augmented prompt to feed the pipeline."""
+    if not rag_store.has_session_docs(sid):
+        return {"prompt": query, "used": False, "chunk_count": 0, "sources": []}
+
+    retrieved = rag_store.retrieve_context(sid, query, top_k=3)
+    if not retrieved:
+        return {"prompt": query, "used": False, "chunk_count": 0, "sources": []}
+
+    sources = list(dict.fromkeys(c["filename"] for c in retrieved))
+    context_block = "\n\n".join(c["text"] for c in retrieved)
+    augmented_prompt = (
+        "CONTEXT FROM USER'S UPLOADED DOCUMENTS:\n"
+        f"{context_block}\n\n"
+        f"USER QUESTION: {query}\n\n"
+        "Answer the user's question using the context above. If the context doesn't contain the answer, say so clearly."
+    )
+    return {"prompt": augmented_prompt, "used": True, "chunk_count": len(retrieved), "sources": sources}
 
 class RouteRequest(BaseModel):
     prompt: str
@@ -44,10 +71,13 @@ async def run_pipeline(request: PipelineRequest, user_id: str = Depends(get_curr
     
     # 3. Get trimmed conversation history (last 10 messages for token control)
     conversation_history = session_store.get_recent_history(user_id, sid, n=10)
-    
+
+    # 4. RAG — retrieve relevant chunks from any documents uploaded to this session
+    rag = _build_rag_context(sid, request.query)
+
     initial_state = {
         "session_id": sid,
-        "query": request.query,
+        "query": rag["prompt"],
         "conversation_history": conversation_history,
         "context": "",
         "analysis": "",
@@ -55,17 +85,20 @@ async def run_pipeline(request: PipelineRequest, user_id: str = Depends(get_curr
         "final_report": "",
         "nodes_executed": [],
         "total_cost": 0.0,
-        "routing_logs": []
+        "routing_logs": [],
+        "rag_used": rag["used"],
+        "rag_chunk_count": rag["chunk_count"],
+        "rag_sources": rag["sources"]
     }
-    
+
     if request.compare:
         import asyncio
         import litellm
         import json
-        
+
         baseline_state = {
             "session_id": sid + "_base",
-            "query": request.query,
+            "query": rag["prompt"],
             "conversation_history": conversation_history,
             "context": "",
             "analysis": "",
@@ -74,7 +107,10 @@ async def run_pipeline(request: PipelineRequest, user_id: str = Depends(get_curr
             "nodes_executed": [],
             "total_cost": 0.0,
             "routing_logs": [],
-            "baseline_model": True
+            "baseline_model": True,
+            "rag_used": rag["used"],
+            "rag_chunk_count": rag["chunk_count"],
+            "rag_sources": rag["sources"]
         }
         
         # Run LangGraph pipeline concurrently
@@ -224,6 +260,51 @@ async def get_session(session_id: str, user_id: str = Depends(get_current_user))
     if not session:
         return {"error": "Session not found"}
     return session
+
+
+# --- RAG Document Upload Endpoints ---
+
+@router.post("/upload", tags=["RAG"])
+async def upload_file(
+    file: UploadFile = File(...),
+    session_id: str = Form(...),
+    user_id: str = Depends(get_current_user)
+):
+    """Upload a PDF/PPTX/image, extract its text, and index it for RAG retrieval scoped to session_id."""
+    ext = os.path.splitext(file.filename or "")[1].lstrip(".").lower()
+    if ext not in SUPPORTED_UPLOAD_TYPES:
+        return {"status": "error", "message": f"Unsupported file type: .{ext or 'unknown'}"}
+
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
+            tmp.write(await file.read())
+            tmp_path = tmp.name
+
+        text = await extract_text(tmp_path, ext)
+        if not text.strip():
+            return {"status": "error", "message": "Could not extract any text from this file."}
+
+        chunks_added = rag_store.add_document(session_id, text, file.filename)
+        return {"status": "ok", "filename": file.filename, "chunks_added": chunks_added}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+@router.get("/documents/{session_id}", tags=["RAG"])
+async def list_documents(session_id: str, user_id: str = Depends(get_current_user)):
+    """List uploaded document filenames indexed for a session."""
+    return {"filenames": rag_store.list_documents(session_id)}
+
+
+@router.delete("/documents/{session_id}", tags=["RAG"])
+async def clear_documents(session_id: str, user_id: str = Depends(get_current_user)):
+    """Remove all uploaded documents indexed for a session."""
+    rag_store.clear_session(session_id)
+    return {"status": "ok"}
 
 
 @router.get("/dashboard/metrics", tags=["Dashboard"])

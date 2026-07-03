@@ -2,10 +2,13 @@ import React, { useState, useEffect, useRef } from 'react';
 import CostPanel from './panels/CostPanel';
 import RoutingLogTable from './panels/RoutingLogTable';
 import ComparePanel from './panels/ComparePanel';
-import { Send, Sparkles, Activity, Clock, Compass, Zap, Settings, ChevronRight, Menu, Plus, Scale, MessageSquare, Search, LogOut, User } from 'lucide-react';
+import DocumentsPanel from './panels/DocumentsPanel';
+import { Send, Sparkles, Activity, Clock, Compass, Zap, Settings, ChevronRight, Menu, Plus, Scale, MessageSquare, Search, LogOut, User, Paperclip, X, Loader2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { useOutletContext } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
+
+const ACCEPTED_UPLOAD_TYPES = '.pdf,.pptx,.jpg,.jpeg,.png';
 
 interface Message {
   id: string;
@@ -33,10 +36,14 @@ const ChatApp = () => {
   const [metrics, setMetrics] = useState<any>(null);
   const [showInsights, setShowInsights] = useState(false);
   const [compareMode, setCompareMode] = useState(false);
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string>(() => crypto.randomUUID());
   const [recentSessions, setRecentSessions] = useState<SessionSummary[]>([]);
-  
+  const [uploadedFiles, setUploadedFiles] = useState<{ filename: string; chunks: number }[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -76,10 +83,21 @@ const ChatApp = () => {
       .catch(console.error);
   };
 
+  const fetchDocuments = (sid: string) => {
+    fetch(`http://localhost:8000/documents/${sid}`, {
+      headers: { 'Authorization': `Bearer ${session?.access_token}` }
+    })
+      .then(res => res.json())
+      .then(data => setUploadedFiles((data.filenames || []).map((filename: string) => ({ filename, chunks: 0 }))))
+      .catch(console.error);
+  };
+
   const handleNewChat = () => {
-    setSessionId(null);
+    setSessionId(crypto.randomUUID());
     setMessages([]);
     setLogs([]);
+    setUploadedFiles([]);
+    setUploadError(null);
   };
 
   const handleLoadSession = async (sid: string) => {
@@ -99,6 +117,53 @@ const ChatApp = () => {
         }))
       );
       setLogs([]);
+      fetchDocuments(sid);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    setUploadError(null);
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('session_id', sessionId);
+
+      const res = await fetch('http://localhost:8000/upload', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${session?.access_token}` },
+        body: formData
+      });
+      const data = await res.json();
+
+      if (data.status === 'ok') {
+        setUploadedFiles(prev => [...prev, { filename: data.filename, chunks: data.chunks_added }]);
+      } else {
+        setUploadError(data.message || 'Upload failed.');
+        setTimeout(() => setUploadError(null), 4000);
+      }
+    } catch (err) {
+      setUploadError('Failed to connect to server.');
+      setTimeout(() => setUploadError(null), 4000);
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const handleClearDocuments = async () => {
+    try {
+      await fetch(`http://localhost:8000/documents/${sessionId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${session?.access_token}` }
+      });
+      setUploadedFiles([]);
     } catch (e) {
       console.error(e);
     }
@@ -120,20 +185,15 @@ const ChatApp = () => {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session?.access_token}` 
         },
-        body: JSON.stringify({ 
-          query: queryToRun, 
+        body: JSON.stringify({
+          query: queryToRun,
           compare: compareMode,
-          session_id: sessionId  // null on first message → backend creates new
+          session_id: sessionId  // pre-generated client-side so uploads can attach before the first message
         })
       });
       const data = await res.json();
-      
-      // Store the session_id returned by the backend
-      if (data.session_id && !sessionId) {
-        setSessionId(data.session_id);
-      }
 
-      setMessages(prev => [...prev, { 
+      setMessages(prev => [...prev, {
         id: Date.now().toString(), 
         role: 'assistant', 
         content: data.final_report || "No response generated.",
@@ -260,6 +320,20 @@ const ChatApp = () => {
 
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col h-full relative w-full overflow-hidden">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept={ACCEPTED_UPLOAD_TYPES}
+          onChange={handleFileUpload}
+          className="hidden"
+        />
+
+        {uploadError && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 bg-danger/90 text-white text-sm px-4 py-2 rounded-lg shadow-lg">
+            {uploadError}
+          </div>
+        )}
+
         {messages.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center p-6 mt-[-10vh]">
             <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary/20 to-secondary/20 flex items-center justify-center mb-6">
@@ -273,6 +347,16 @@ const ChatApp = () => {
             </p>
 
             <div className="w-full max-w-3xl relative group">
+              {uploadedFiles.length > 0 && (
+                <div className="flex flex-wrap gap-2 mb-3">
+                  {uploadedFiles.map((f, i) => (
+                    <span key={`${f.filename}-${i}`} className="flex items-center space-x-1.5 px-3 py-1 bg-surface border border-border rounded-full text-xs text-text-secondary">
+                      <Paperclip className="w-3 h-3" />
+                      <span>{f.filename}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
               <div className="absolute -inset-1 bg-gradient-to-r from-primary/30 to-secondary/30 rounded-2xl blur opacity-20 group-focus-within:opacity-50 transition duration-1000"></div>
               <div className="relative bg-surface rounded-2xl border border-border p-2">
                 <textarea
@@ -290,6 +374,15 @@ const ChatApp = () => {
                 />
                 <div className="flex items-center justify-between px-2 pb-2">
                   <div className="flex space-x-2">
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={isUploading}
+                      className="flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-background border border-border hover:border-primary/50 text-xs text-text-secondary transition-colors disabled:opacity-50"
+                      title="Attach a PDF, PPTX, or image"
+                    >
+                      {isUploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Paperclip className="w-3 h-3" />}
+                      <span>{isUploading ? 'Uploading...' : 'Attach'}</span>
+                    </button>
                     <button onClick={() => handleSend("Analyze the ethical implications of AGI.")} className="flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-background border border-border hover:border-primary/50 text-xs text-text-secondary transition-colors">
                       <Zap className="w-3 h-3 text-warning" />
                       <span>Deep Search</span>
@@ -415,8 +508,26 @@ const ChatApp = () => {
             {/* Sticky Input Bar */}
             <div className="absolute bottom-0 w-full bg-gradient-to-t from-background via-background to-transparent pt-10 pb-6 px-4">
               <div className="max-w-3xl mx-auto relative group">
+                {uploadedFiles.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mb-2">
+                    {uploadedFiles.map((f, i) => (
+                      <span key={`${f.filename}-${i}`} className="flex items-center space-x-1.5 px-3 py-1 bg-surface border border-border rounded-full text-xs text-text-secondary">
+                        <Paperclip className="w-3 h-3" />
+                        <span>{f.filename}</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <div className="absolute -inset-0.5 bg-gradient-to-r from-primary/20 to-secondary/20 rounded-2xl blur opacity-30 group-focus-within:opacity-100 transition duration-500"></div>
                 <div className="relative flex items-end bg-surface rounded-2xl shadow-sm border border-border focus-within:border-primary/50 transition-all p-2 pl-4">
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isUploading}
+                    className="p-2 mb-1 mr-1 text-text-secondary hover:text-primary transition-colors disabled:opacity-50 shrink-0"
+                    title="Attach a PDF, PPTX, or image"
+                  >
+                    {isUploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Paperclip className="w-5 h-5" />}
+                  </button>
                   <textarea
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
@@ -467,7 +578,9 @@ const ChatApp = () => {
             />
           )}
           <CostPanel metrics={metrics} />
-          
+
+          <DocumentsPanel files={uploadedFiles} onClear={handleClearDocuments} />
+
           <div className="mt-8">
             <h3 className="text-xs font-semibold uppercase text-text-secondary mb-3 flex items-center space-x-2">
               <Clock className="w-4 h-4" />

@@ -27,19 +27,22 @@ class DynamicRouter:
     def __init__(self):
         pass
         
-    async def dispatch(self, prompt: str, complexity: ComplexityScore, tier_override: Optional[str] = None) -> Dict[str, Any]:
+    async def dispatch(self, prompt: str, complexity: ComplexityScore, tier_override: Optional[str] = None, model_override: Optional[str] = None) -> Dict[str, Any]:
         """
         Dispatch the prompt to the appropriate model.
         Returns the response text, usage, cost, and latency.
         """
         target_tier = tier_override if tier_override else complexity.tier
         
-        # Get models for tier
-        models = settings.get_models_for_tier(target_tier)
-        if not models:
-            raise ValueError(f"No models configured for tier: {target_tier}")
-            
-        model_id = models[0]  # Try the first model in the tier
+        if model_override:
+            model_id = model_override
+        else:
+            # Get models for tier
+            models = settings.get_models_for_tier(target_tier)
+            if not models:
+                raise ValueError(f"No models configured for tier: {target_tier}")
+                
+            model_id = models[0]  # Try the first model in the tier
         
         # ── Debug Logging ───────────────────────────────────────────────
         provider = model_id.split("/")[0] if "/" in model_id else "unknown"
@@ -48,13 +51,18 @@ class DynamicRouter:
         start_time = time.time()
         
         try:
+            kwargs = {}
+            if "cerebras" in model_id.lower():
+                kwargs["api_base"] = "https://api.cerebras.ai/v1"
+                
             response = await acompletion(
                 model=model_id,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.0
+                temperature=0.0,
+                **kwargs
             )
             
             latency = (time.time() - start_time) * 1000  # ms
@@ -75,7 +83,13 @@ class DynamicRouter:
             elif target_tier == "large":
                 estimated_cost = 0.015
             else:
-                estimated_cost = 0.04
+                if "cerebras" in model_id.lower() and usage:
+                    estimated_cost = (usage.prompt_tokens * 0.39 / 1000000) + (usage.completion_tokens * 0.75 / 1000000)
+                else:
+                    estimated_cost = 0.04
+                    
+            # Requested Observability Log Format
+            logger.info(f'{{ "router_decision": "{target_tier}", "reasoning_score": {complexity.score}, "exact_cost_usd": {estimated_cost:.6f} }}')
                 
             return {
                 "success": True,

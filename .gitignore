@@ -26,12 +26,14 @@ frontend/build/
 .idea/
 *.swp
 *.swo
+.claude/
 
 # Docker volumes (local data)
 postgres_data/
 mongo_data/
 redis_data/
 chroma_data/
+backend/chroma_db/
 
 # Test / Coverage
 .pytest_cache/

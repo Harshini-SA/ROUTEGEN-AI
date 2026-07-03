@@ -59,6 +59,7 @@ class PromptClassifier:
         avg_word_length = sum(len(w) for w in words) / len(words) if words else 0.0
 
         return {
+            "prompt_text": prompt,
             "token_count": token_count,
             "sentence_count": sentence_count,
             "question_count": question_count,
@@ -68,6 +69,15 @@ class PromptClassifier:
             "conditional_count": conditional_count,
             "avg_word_length": avg_word_length
         }
+
+    def tier_for_score(self, score: float) -> str:
+        """Map a complexity score (1-10) to a tier name (1-4 Small, 5-7 Large, 8-10 Reasoning)."""
+        if score <= 4.9:
+            return "small"
+        elif score <= 7.9:
+            return "large"
+        else:
+            return "reasoning"
 
     def score_prompt(self, prompt: str) -> ComplexityScore:
         features = self.extract_features(prompt)
@@ -93,53 +103,45 @@ class PromptClassifier:
         return self._score_from_features(features)
 
     def _score_from_features(self, features: Dict[str, Any]) -> ComplexityScore:
-        # Calculate dimension scores (1-10)
+        prompt_lower = features.get("prompt_text", "").lower()
+        token_count = features.get("token_count", 0)
+
+        # 1. Reasoning / Math / Complex Logic Indicators (8-10 Range)
+        reasoning_keywords = [
+            "prove", "proof", "solve", "calculate", "theorem", "contradiction", 
+            "\\sqrt", "\\[", "\\(", "equation", "integral", "derivative", "math"
+        ]
         
-        # Dimension 1: Token Length (20%)
-        # > 1000 tokens -> 10, < 50 -> 1
-        len_score = min(10.0, max(1.0, (features["token_count"] / 100.0) + 1.0))
-        
-        # Dimension 2: Ambiguity (20%)
-        # Few sentences but long words / questions might mean underspecified
-        amb_score = min(10.0, max(1.0, features["question_count"] * 2.0 + (features["avg_word_length"] - 4)))
+        # 2. Analysis / Creative / Multi-part Indicators (5-7 Range)
+        analysis_keywords = [
+            "explain", "analyze", "compare", "design", "strategy", "marketing", 
+            "positioning", "channels", "pricing", "write", "create", "how to", "steps"
+        ]
 
-        # Dimension 3: Domain Depth (25%)
-        dom_score = min(10.0, max(1.0, features["technical_term_ratio"] * 30.0 + 1.0))
+        has_reasoning = any(word in prompt_lower for word in reasoning_keywords)
+        has_analysis = any(word in prompt_lower for word in analysis_keywords)
 
-        # Dimension 4: Output Format (15%)
-        fmt_score = 8.0 if features["structured_output_required"] else 2.0
+        # Length bonus (up to +2.0 points for very long prompts)
+        length_bonus = min(2.0, token_count / 100.0)
 
-        # Dimension 5: Reasoning Required (20%)
-        rsn_score = min(10.0, max(1.0, (features["negation_count"] * 1.5) + (features["conditional_count"] * 2.0) + 1.0))
-
-        # Weighted Total Score
-        total_score = (
-            len_score * 0.20 +
-            amb_score * 0.20 +
-            dom_score * 0.25 +
-            fmt_score * 0.15 +
-            rsn_score * 0.20
-        )
-
-        total_score = min(10.0, max(1.0, round(total_score, 1)))
-
-        # Tier mapping (1-4 Small, 5-7 Large, 8-10 Reasoning)
-        if total_score <= 4:
-            tier = "small"
-        elif total_score <= 7:
-            tier = "large"
+        if has_reasoning:
+            base_score = 8.0
+        elif has_analysis or token_count > 60:
+            base_score = 5.0
         else:
-            tier = "reasoning"
+            base_score = 1.0 # Simple factual questions fall here
+
+        total_score = base_score + length_bonus
+        total_score = min(10.0, max(1.0, round(total_score, 1)))
 
         return ComplexityScore(
             score=total_score,
-            tier=tier,
+            tier=self.tier_for_score(total_score),
             breakdown={
-                "length": round(len_score, 1),
-                "ambiguity": round(amb_score, 1),
-                "domain": round(dom_score, 1),
-                "format": round(fmt_score, 1),
-                "reasoning": round(rsn_score, 1)
+                "base_score": base_score,
+                "length_bonus": round(length_bonus, 1),
+                "is_reasoning": 1.0 if has_reasoning else 0.0,
+                "is_analysis": 1.0 if has_analysis else 0.0
             },
             features=features
         )

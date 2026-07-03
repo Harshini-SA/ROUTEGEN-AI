@@ -45,19 +45,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"⚠️ Redis unavailable (skipping): {e}")
 
-    # ── Bridge Bedrock API key to LiteLLM's expected env var ──────────
-    import os
-    bedrock_key = settings.aws_bedrock_api_key or os.environ.get("AWS_BEDROCK_API_KEY")
-    if bedrock_key:
-        os.environ["AWS_BEARER_TOKEN_BEDROCK"] = bedrock_key
-        os.environ["AWS_REGION_NAME"] = settings.aws_region_name
-        logger.info(f"🔑 AWS Bedrock key bridged → AWS_BEARER_TOKEN_BEDROCK (region: {settings.aws_region_name})")
-
     # ── API Key Presence Check ────────────────────────────────────────
+    import os
     groq_ok = bool(os.environ.get("GROQ_API_KEY"))
     gemini_ok = bool(os.environ.get("GEMINI_API_KEY"))
-    bedrock_ok = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK"))
-    logger.info(f"🔑 API Keys → Groq={'✅' if groq_ok else '❌'}  Gemini={'✅' if gemini_ok else '❌'}  Bedrock={'✅' if bedrock_ok else '❌'}")
+    deepseek_ok = bool(os.environ.get("DEEPSEEK_API_KEY"))
+    logger.info(f"🔑 API Keys → Groq={'✅' if groq_ok else '❌'}  Gemini={'✅' if gemini_ok else '❌'}  DeepSeek={'✅' if deepseek_ok else '❌'}")
 
     logger.info(f"📊 Budget cap: ${settings.budget_cap_usd:.2f}")
     logger.info(f"🔍 Cache similarity threshold: {settings.cache_similarity_threshold}")
