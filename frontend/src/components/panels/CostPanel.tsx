@@ -37,7 +37,7 @@ const CostPanel = ({ metrics }: { metrics: any }) => {
             <Tooltip 
               cursor={{ fill: 'transparent' }}
               contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '8px', color: '#fff' }}
-              formatter={(value: number) => [`$${value.toFixed(4)}`, 'Cost']}
+              formatter={(value: any) => [`$${Number(value).toFixed(4)}`, 'Cost']}
             />
             <Bar dataKey="cost" radius={[0, 4, 4, 0]} barSize={32}>
               {data.map((entry, index) => (

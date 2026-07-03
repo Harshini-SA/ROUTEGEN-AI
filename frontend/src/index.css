@@ -32,3 +32,59 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   @apply bg-text-secondary;
 }
+
+/* Custom Animations & Styles */
+@keyframes gradient-bg {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+@keyframes pulse-slow {
+  0%, 100% { transform: scale(1) translate(0, 0); opacity: 0.15; }
+  50% { transform: scale(1.15) translate(3%, -3%); opacity: 0.3; }
+}
+
+@keyframes pulse-slow-reverse {
+  0%, 100% { transform: scale(1.1) translate(0, 0); opacity: 0.12; }
+  50% { transform: scale(0.95) translate(-4%, 4%); opacity: 0.22; }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+
+@keyframes beam {
+  0% { stroke-dashoffset: 100; }
+  100% { stroke-dashoffset: 0; }
+}
+
+.animate-gradient {
+  background-size: 200% auto;
+  animation: gradient-bg 8s linear infinite;
+}
+
+.animate-pulse-slow {
+  animation: pulse-slow 15s ease-in-out infinite;
+}
+
+.animate-pulse-slow-reverse {
+  animation: pulse-slow-reverse 18s ease-in-out infinite;
+}
+
+.animate-float {
+  animation: float 6s ease-in-out infinite;
+}
+
+.animate-beam {
+  stroke-dasharray: 12 12;
+  animation: beam 3s linear infinite;
+}
+
+/* Dots Grid Background */
+.bg-grid-dots {
+  background-image: radial-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
