@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { Scale, DollarSign, Award, Zap, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { API_BASE } from '../lib/api';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -76,6 +77,15 @@ const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId 
   const [isRunning, setIsRunning] = useState(false);
   const [result, setResult] = useState<CompareResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Progress stages. The backend runs routing + baseline in parallel then judges,
+  // so these are indicative, timer-advanced stages to keep the user informed.
+  const [stage, setStage] = useState<'idle' | 'routing' | 'baseline' | 'judging'>('idle');
+  const stageTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  const clearStageTimers = () => {
+    stageTimers.current.forEach(clearTimeout);
+    stageTimers.current = [];
+  };
 
   const handleRunComparison = async () => {
     if (!prompt.trim() || isRunning) return;
@@ -83,8 +93,14 @@ const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId 
     setError(null);
     setResult(null);
 
+    // Drive the progress messages forward while the single request is in flight.
+    setStage('routing');
+    clearStageTimers();
+    stageTimers.current.push(setTimeout(() => setStage('baseline'), 2500));
+    stageTimers.current.push(setTimeout(() => setStage('judging'), 6000));
+
     try {
-      const res = await fetch('http://127.0.0.1:8000/compare', {
+      const res = await fetch(`${API_BASE}/compare`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -97,9 +113,18 @@ const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId 
     } catch (e) {
       setError('Failed to run comparison. Please try again.');
     } finally {
+      clearStageTimers();
+      setStage('idle');
       setIsRunning(false);
     }
   };
+
+  const STAGE_STEPS: { key: 'routing' | 'baseline' | 'judging'; label: string }[] = [
+    { key: 'routing', label: '🔀 Running smart routing pipeline...' },
+    { key: 'baseline', label: '💰 Running baseline pipeline...' },
+    { key: 'judging', label: '⚖️ Judging quality...' },
+  ];
+  const stageIndex = STAGE_STEPS.findIndex((s) => s.key === stage);
 
   const costData = result ? [
     { name: 'Smart Routing', value: result.routed.cost },
@@ -166,9 +191,30 @@ const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId 
         )}
 
         {isRunning && (
-          <div className="flex flex-col items-center justify-center py-16 space-y-3 text-text-secondary">
+          <div className="flex flex-col items-center justify-center py-16 space-y-5">
             <Loader2 className="w-8 h-8 animate-spin text-secondary" />
-            <p className="text-sm">Running both pipelines and judging quality — this takes a moment.</p>
+            <div className="space-y-2.5 w-full max-w-xs">
+              {STAGE_STEPS.map((step, i) => {
+                const done = i < stageIndex;
+                const active = i === stageIndex;
+                return (
+                  <div
+                    key={step.key}
+                    className={`flex items-center space-x-2 text-sm transition-all ${
+                      active ? 'text-text-primary font-medium' : done ? 'text-success' : 'text-text-secondary/50'
+                    }`}
+                  >
+                    {done
+                      ? <CheckCircle2 className="w-4 h-4 shrink-0" />
+                      : active
+                        ? <Loader2 className="w-4 h-4 shrink-0 animate-spin" />
+                        : <span className="w-4 h-4 shrink-0 rounded-full border border-current opacity-40" />}
+                    <span>{step.label}</span>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="typing-indicator"><span></span><span></span><span></span></div>
           </div>
         )}
 
@@ -181,11 +227,11 @@ const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId 
                 : <AlertTriangle className="w-6 h-6 text-danger shrink-0" />}
               <div>
                 <p className={`text-lg font-bold ${result.savings.quality_maintained ? 'text-success' : 'text-danger'}`}>
-                  Saved {result.savings.cost_savings_pct.toFixed(0)}% cost & {result.savings.energy_joules_saved_pct.toFixed(0)}% energy
+                  Saved {(result.savings?.cost_savings_pct ?? 0).toFixed(0)}% cost & {(result.savings?.energy_joules_saved_pct ?? 0).toFixed(0)}% energy
                   {result.savings.accuracy_scoring_available && (
                     result.savings.quality_maintained
                       ? ' | Quality maintained ✓'
-                      : ` | Quality dropped ${Math.abs(result.savings.accuracy_delta).toFixed(1)} points`
+                      : ` | Quality dropped ${Math.abs(result.savings?.accuracy_delta ?? 0).toFixed(1)} points`
                   )}
                 </p>
                 <p className="text-xs text-text-secondary mt-0.5">{result.verdict}</p>
@@ -218,11 +264,11 @@ const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId 
                 <div className="grid grid-cols-4 gap-2 mb-3">
                   <div className="bg-background rounded-lg p-2 border border-border">
                     <p className="text-[10px] text-text-secondary uppercase">Cost</p>
-                    <p className="text-sm font-bold text-success">${result.routed.cost.toFixed(5)}</p>
+                    <p className="text-sm font-bold text-success">${(result.routed?.cost ?? 0).toFixed(5)}</p>
                   </div>
                   <div className="bg-background rounded-lg p-2 border border-border">
                     <p className="text-[10px] text-text-secondary uppercase">Energy</p>
-                    <p className="text-sm font-bold text-success" title={`${result.routed.energy_gco2e.toFixed(5)} gCO2e`}>{result.routed.energy_joules.toFixed(4)}J</p>
+                    <p className="text-sm font-bold text-success" title={`${(result.routed?.energy_gco2e ?? 0).toFixed(5)} gCO2e`}>{(result.routed?.energy_joules ?? 0).toFixed(4)}J</p>
                   </div>
                   <div className="bg-background rounded-lg p-2 border border-border">
                     <p className="text-[10px] text-text-secondary uppercase">Latency</p>
@@ -275,11 +321,11 @@ const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId 
                 <div className="grid grid-cols-4 gap-2 mb-3">
                   <div className="bg-background rounded-lg p-2 border border-border">
                     <p className="text-[10px] text-text-secondary uppercase">Cost</p>
-                    <p className="text-sm font-bold text-danger">${result.baseline.cost.toFixed(5)}</p>
+                    <p className="text-sm font-bold text-danger">${(result.baseline?.cost ?? 0).toFixed(5)}</p>
                   </div>
                   <div className="bg-background rounded-lg p-2 border border-border">
                     <p className="text-[10px] text-text-secondary uppercase">Energy</p>
-                    <p className="text-sm font-bold text-danger" title={`${result.baseline.energy_gco2e.toFixed(5)} gCO2e`}>{result.baseline.energy_joules.toFixed(4)}J</p>
+                    <p className="text-sm font-bold text-danger" title={`${(result.baseline?.energy_gco2e ?? 0).toFixed(5)} gCO2e`}>{(result.baseline?.energy_joules ?? 0).toFixed(4)}J</p>
                   </div>
                   <div className="bg-background rounded-lg p-2 border border-border">
                     <p className="text-[10px] text-text-secondary uppercase">Latency</p>
@@ -328,11 +374,11 @@ const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId 
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={costData} margin={{ top: 16, right: 10, left: 10, bottom: 5 }}>
                       <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#94a3b8' }} />
-                      <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} tickFormatter={(v) => `$${v.toFixed(4)}`} width={60} />
+                      <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} tickFormatter={(v) => `$${(v ?? 0).toFixed(4)}`} width={60} />
                       <Tooltip
                         cursor={{ fill: 'rgba(255,255,255,0.03)' }}
                         contentStyle={CHART_TOOLTIP_STYLE}
-                        formatter={(v: any) => [`$${Number(v).toFixed(5)}`, 'Cost']}
+                        formatter={(v: any) => [`$${(Number(v) || 0).toFixed(5)}`, 'Cost']}
                       />
                       <ReferenceLine
                         y={savingsTargetCost}
@@ -385,11 +431,11 @@ const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId 
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={energyData} margin={{ top: 16, right: 10, left: 10, bottom: 5 }}>
                       <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#94a3b8' }} />
-                      <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} tickFormatter={(v) => `${v.toFixed(3)}J`} width={45} />
+                      <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} tickFormatter={(v) => `${(v ?? 0).toFixed(3)}J`} width={45} />
                       <Tooltip
                         cursor={{ fill: 'rgba(255,255,255,0.03)' }}
                         contentStyle={CHART_TOOLTIP_STYLE}
-                        formatter={(v: any) => [`${Number(v).toFixed(4)} Joules`, 'Energy']}
+                        formatter={(v: any) => [`${(Number(v) || 0).toFixed(4)} Joules`, 'Energy']}
                       />
                       <ReferenceLine
                         y={savingsTargetEnergy}
@@ -414,15 +460,15 @@ const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId 
               <div className="flex flex-col sm:flex-row sm:space-x-8 space-y-2 sm:space-y-0 font-mono text-sm">
                 <div>
                   <span className="text-secondary">S_$</span> = <span className="text-text-primary">C_baseline &minus; &Sigma;(C_node_i)</span>
-                  <span className="text-text-secondary ml-2">= ${result.savings.cost_savings_usd.toFixed(5)}</span>
+                  <span className="text-text-secondary ml-2">= ${(result.savings?.cost_savings_usd ?? 0).toFixed(5)}</span>
                 </div>
                 <div>
                   <span className="text-secondary">S_energy</span> = <span className="text-text-primary">E_baseline &minus; &Sigma;(E_node_i)</span>
-                  <span className="text-text-secondary ml-2">= {result.savings.energy_joules_saved.toFixed(4)} J</span>
+                  <span className="text-text-secondary ml-2">= ${(result.savings?.energy_joules_saved ?? 0).toFixed(4)} J</span>
                 </div>
                 <div>
                   <span className="text-secondary">&Delta;A</span> = <span className="text-text-primary">A_baseline &minus; A_routed</span>
-                  <span className="text-text-secondary ml-2">= {(-result.savings.accuracy_delta).toFixed(1)} pts</span>
+                  <span className="text-text-secondary ml-2">= {(-(result.savings?.accuracy_delta ?? 0)).toFixed(1)} pts</span>
                 </div>
               </div>
               {!result.savings.accuracy_scoring_available && (

@@ -5,7 +5,37 @@ from langgraph.graph import StateGraph, END
 from app.core.classifier import classifier, ComplexityScore
 from app.core.cache import semantic_cache
 from app.core.fallback import fallback_manager
-from app.core.router import SYSTEM_PROMPT
+from app.core.router import SYSTEM_PROMPT, GREETING_SYSTEM_PROMPT
+
+
+# Tight greeting list — narrower than the classifier's INSTANT_SMALL (which also
+# covers simple factual openers like "what is"). These short-circuit the entire
+# 5-node research pipeline so "hello" can never become a 5-paragraph essay.
+GREETING_WORDS = [
+    "hello", "hi", "hey", "hiya", "yo", "thanks", "thank you", "thx",
+    "ok", "okay", "cool", "great", "nice", "sure", "bye", "goodbye",
+    "good morning", "good afternoon", "good evening", "good night",
+    "how are you", "what's up", "whats up", "sup",
+]
+
+
+_GREETING_DISQUALIFIERS = (
+    "prove", "solve", "calculate", "explain", "write", "analyze", "design",
+    "proof", "help me", "how do", "how to", "what is", "why", "code",
+)
+
+
+def is_greeting(query: str) -> bool:
+    """
+    True when the raw query is *just* a social greeting/acknowledgement — not a
+    real request that merely opens with one (e.g. "hey, can you prove X?").
+    """
+    ql = query.lower().strip().rstrip("!.?,")
+    # A greeting followed by a substantive ask is NOT a greeting.
+    if len(ql.split()) > 4 or any(d in ql for d in _GREETING_DISQUALIFIERS):
+        return False
+    # Word-boundary match so "hi" never matches "history" and "hey" never "heyday".
+    return any(ql == w or ql.startswith(w + " ") for w in GREETING_WORDS)
 
 
 def _build_context_preamble(history: List[Dict[str, str]]) -> str:
@@ -255,16 +285,107 @@ async def node_final_formatting(state: PipelineState):
     }
 
 
+async def node_greeting(state: PipelineState):
+    """
+    Fast path for greetings: ONE cheap Small-tier call with a greeting-only system
+    prompt, then straight to END — skipping search / analysis / contradiction /
+    formatting. This is what actually prevents "hello" from becoming an essay.
+    """
+    import litellm
+    import logging
+    from app.config import settings
+    from app.core.energy import calculate_usage_energy
+
+    _logger = logging.getLogger("routegen.greeting")
+    start_time = time.time()
+
+    # Baseline compare runs greet with their forced model too; otherwise Small tier.
+    baseline_model = state.get("baseline_model")
+    if baseline_model and not isinstance(baseline_model, bool):
+        model_id = baseline_model
+    else:
+        model_id = settings.get_models_for_tier("small")[0]
+
+    _logger.info(f"👋 GREETING fast-path | Model={model_id} | Query={state['query']!r}")
+
+    content = "Hey! 👋 How can I help you today?"  # safe fallback if the call errors
+    cost = energy_joules = energy_gco2e = 0.0
+    try:
+        kwargs = {}
+        if "cerebras" in model_id.lower():
+            kwargs["api_base"] = "https://api.cerebras.ai/v1"
+        res = await litellm.acompletion(
+            model=model_id,
+            messages=[
+                {"role": "system", "content": GREETING_SYSTEM_PROMPT},
+                {"role": "user", "content": state["query"]},
+            ],
+            temperature=0.3,
+            **kwargs,
+        )
+        content = res.choices[0].message.content
+        cost = litellm.completion_cost(completion_response=res) or 0.0
+        in_tok = res.usage.prompt_tokens if getattr(res, "usage", None) else 0
+        out_tok = res.usage.completion_tokens if getattr(res, "usage", None) else 0
+        energy_joules, energy_gco2e = calculate_usage_energy(model_id, in_tok, out_tok)
+    except Exception as e:
+        _logger.warning(f"Greeting call failed ({type(e).__name__}: {e}); using canned reply")
+
+    latency = (time.time() - start_time) * 1000
+    # Logged under query_parsing so the visualizer's summary bar (tier/score/model/cost)
+    # and Node 1 detail populate; nodes 2-5 simply have no trace entry.
+    log_entry = {
+        "node_id": "query_parsing",
+        "model_used": model_id,
+        "tier_selected": "baseline" if baseline_model else "small",
+        "complexity_score": 1.0,
+        "classification_reason": "Greeting — fast path (research pipeline skipped)",
+        "classification_confidence": 0.99,
+        "classification_method": "greeting_shortcut",
+        "latency_ms": latency,
+        "cost_usd": cost,
+        "energy_joules": energy_joules,
+        "energy_gco2e": energy_gco2e,
+        "fallback_triggered": False,
+        "cache_hit": False,
+        "rag_used": False,
+        "rag_chunk_count": 0,
+        "rag_sources": [],
+    }
+    return {
+        "final_report": content,
+        "context": content,
+        "analysis": "",
+        "contradictions": "",
+        "nodes_executed": ["greeting"],
+        "routing_logs": [log_entry],
+        "total_cost": state.get("total_cost", 0.0) + cost,
+        "total_joules": state.get("total_joules", 0.0) + energy_joules,
+        "total_gco2e": state.get("total_gco2e", 0.0) + energy_gco2e,
+    }
+
+
+def _route_entry(state: PipelineState) -> str:
+    """Send greetings down the fast path; everything else into the full pipeline."""
+    return "greeting" if is_greeting(state["query"]) else "query_parsing"
+
+
 # Build graph
 workflow = StateGraph(PipelineState)
 
+workflow.add_node("greeting", node_greeting)
 workflow.add_node("query_parsing", node_query_parsing)
 workflow.add_node("web_search_summarisation", node_web_search_summarisation)
 workflow.add_node("evidence_analysis", node_evidence_analysis)
 workflow.add_node("contradiction_detection", node_contradiction_detection)
 workflow.add_node("final_formatting", node_final_formatting)
 
-workflow.set_entry_point("query_parsing")
+# Conditional entry: greeting fast-path vs. full research pipeline.
+workflow.set_conditional_entry_point(
+    _route_entry,
+    {"greeting": "greeting", "query_parsing": "query_parsing"},
+)
+workflow.add_edge("greeting", END)
 workflow.add_edge("query_parsing", "web_search_summarisation")
 workflow.add_edge("web_search_summarisation", "evidence_analysis")
 workflow.add_edge("evidence_analysis", "contradiction_detection")

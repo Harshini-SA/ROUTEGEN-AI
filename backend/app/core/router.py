@@ -9,6 +9,10 @@ from app.core.energy import get_optimal_model_for_tier, calculate_usage_energy
 
 logger = logging.getLogger("routegen.router")
 
+# Per-model request timeout. Kept short so a stalled/rate-limited provider fails
+# fast into FallbackManager's next-model attempt instead of blocking the whole run.
+REQUEST_TIMEOUT_SECONDS = 15
+
 # ── Shared System Prompt ────────────────────────────────────────────────────
 # Applied to ALL LLM calls (routed + baseline) for consistent output quality.
 SYSTEM_PROMPT = (
@@ -17,8 +21,25 @@ SYSTEM_PROMPT = (
     "Do not narrate your reasoning process, do not use section headers describing what you're about to do, "
     "and do not pad your answer with meta-commentary. Get to the point. "
     "Use bullets, bold, or headers only when they genuinely help clarity for lists, comparisons, "
-    "or multi-step instructions — not for simple conversational answers. "
-    "Match response length to the complexity of the question."
+    "or multi-step instructions — not for simple conversational answers.\n\n"
+    "RESPONSE LENGTH RULES — STRICTLY FOLLOW:\n"
+    "- Greetings (hi, hello, hey, thanks, ok): Reply in 1-2 sentences MAX. Be warm and friendly, "
+    "and ask how you can help. Example: 'Hey! 👋 How can I help you today?'\n"
+    "- Simple factual questions (capital of France, basic definitions): Answer in 1-3 sentences. "
+    "Direct and clear.\n"
+    "- Medium questions (explanations, writing tasks): Use a structured response with headers and "
+    "bullets where helpful. 3-5 paragraphs max.\n"
+    "- Complex questions (proofs, legal analysis, calculations): Full detailed response with all steps "
+    "shown. Use math formatting where needed.\n\n"
+    "NEVER write long essays for simple greetings. NEVER add sections like 'Addressing Contradictions' "
+    "or 'Cultural Analysis' for a simple 'hello'. Match your response length to what the user actually needs."
+)
+
+# Applied ONLY to greetings, which short-circuit the 5-node research pipeline entirely.
+GREETING_SYSTEM_PROMPT = (
+    "You are a friendly AI assistant. The user said a greeting. "
+    "Reply warmly in 1-2 sentences and ask how you can help them today. "
+    "Do not write essays. Do not analyze the word. Just greet back naturally."
 )
 
 
@@ -56,7 +77,11 @@ class DynamicRouter:
             kwargs = {}
             if "cerebras" in model_id.lower():
                 kwargs["api_base"] = "https://api.cerebras.ai/v1"
-                
+
+            # Fail fast instead of eating litellm's default 55-60s retry backoff on a
+            # rate-limited model (esp. Cerebras). We have our OWN cross-model fallback in
+            # FallbackManager, so a quick failure here immediately tries the next model
+            # (e.g. reasoning tier: cerebras -> groq/llama-3.3-70b) rather than stalling.
             response = await acompletion(
                 model=model_id,
                 messages=[
@@ -64,6 +89,8 @@ class DynamicRouter:
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.0,
+                timeout=REQUEST_TIMEOUT_SECONDS,
+                num_retries=0,
                 **kwargs
             )
             

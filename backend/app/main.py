@@ -52,6 +52,16 @@ async def lifespan(app: FastAPI):
     deepseek_ok = bool(os.environ.get("DEEPSEEK_API_KEY"))
     logger.info(f"🔑 API Keys → Groq={'✅' if groq_ok else '❌'}  Gemini={'✅' if gemini_ok else '❌'}  DeepSeek={'✅' if deepseek_ok else '❌'}")
 
+    # ── HuggingFace Classifier Status ─────────────────────────────────
+    hf_key = settings.huggingface_api_key
+    hf_is_real = bool(hf_key) and hf_key.startswith("hf_") and "your_" not in hf_key and "here" not in hf_key
+    if hf_is_real:
+        logger.info("✅ HuggingFace classifier: ACTIVE (semantic zero-shot)")
+    elif hf_key:
+        logger.warning(f"⚠️ HuggingFace classifier: PLACEHOLDER KEY ('{hf_key[:12]}...') — using keyword fallback. Paste a real hf_ token in backend/.env")
+    else:
+        logger.warning("⚠️ HuggingFace classifier: NO KEY — using keyword fallback")
+
     logger.info(f"📊 Budget cap: ${settings.budget_cap_usd:.2f}")
     logger.info(f"🔍 Cache similarity threshold: {settings.cache_similarity_threshold}")
     logger.info("🟢 RouteGen AI ready! (Some services may be unavailable — core routing works)")

@@ -63,14 +63,17 @@ async def run_pipeline(request: PipelineRequest, user_id: str = Depends(get_curr
     """Run the 5-node demo pipeline with conversation memory."""
     
     # 1. Session management — get existing or create new
+    is_new = False
     if request.session_id and db_store.verify_session_owner(request.session_id, user_id):
         sid = request.session_id
     else:
         sid = db_store.create_session(user_id, title="New Chat", session_id=request.session_id)
-        if not request.session_id:
-            # Auto generate title from first query
-            title = request.query[:60] + ("..." if len(request.query) > 60 else "")
-            db_store.update_session_title(sid, title)
+        is_new = True
+
+    if is_new:
+        # Auto generate title from first query
+        title = request.query[:50] + ("..." if len(request.query) > 50 else "")
+        db_store.update_session_title(sid, title)
     
     # 2. Append the user's message to session history
     db_store.append_message(sid, "user", request.query)

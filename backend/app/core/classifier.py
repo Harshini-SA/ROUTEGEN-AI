@@ -34,6 +34,23 @@ LABEL_TO_TIER = {
     "complex reasoning mathematical proof or legal analysis": "reasoning",
 }
 
+# Reasoning indicators shared by the fallback scorer and the instant-small guard.
+REASONING_KEYWORDS = [
+    "prove", "proof", "solve", "calculate", "theorem", "contradiction",
+    "\\sqrt", "\\[", "\\(", "equation", "integral", "derivative", "math",
+    "irrational", "compound interest",
+]
+
+# Greetings / trivially-simple openers that must never route above Small tier,
+# even mid-conversation. Matched against the RAW current query (word-boundary,
+# not substring — so "hi" does not match "history").
+INSTANT_SMALL = [
+    "hello", "hi", "hey", "thanks", "thank you", "ok", "okay", "yes", "no",
+    "sure", "great", "good", "bye", "goodbye", "help", "what", "who", "when",
+    "where", "how are you", "what is", "what are", "who is", "where is",
+    "tell me about", "define", "meaning of",
+]
+
 
 class PromptClassifier:
     """
@@ -57,6 +74,9 @@ class PromptClassifier:
     # ── Public entry points (unchanged signatures — the pipeline depends on these) ──
 
     def score_prompt(self, prompt: str) -> ComplexityScore:
+        instant = self._instant_small(prompt)
+        if instant is not None:
+            return instant
         return self.classify_with_huggingface(prompt)
 
     def score_prompt_in_context(self, prompt: str, conversation_history: list = None) -> ComplexityScore:
@@ -64,6 +84,13 @@ class PromptClassifier:
         Score complexity using conversation context so short follow-ups like
         'make it shorter' inherit the complexity of the ongoing thread.
         """
+        # Greeting/short-query guard runs on the RAW current query FIRST — before
+        # history enrichment — so "hello" after a proof discussion doesn't inherit
+        # the thread's "prove/contradiction" keywords and misroute to Reasoning.
+        instant = self._instant_small(prompt)
+        if instant is not None:
+            return instant
+
         if not conversation_history or len(conversation_history) <= 1:
             return self.classify_with_huggingface(prompt)
 
@@ -73,6 +100,34 @@ class PromptClassifier:
         result = self.classify_with_huggingface(enriched_prompt)
         result.reason += " (context-aware)"
         return result
+
+    def _instant_small(self, query: str):
+        """
+        Force trivially-simple queries to Small tier regardless of HF/keyword path.
+        Returns a ComplexityScore, or None if the query isn't obviously simple.
+        Operates on the raw current query and never fires when a genuine reasoning
+        keyword is present (so "prove that..." or "what is the proof of..." are safe).
+        """
+        ql = query.lower().strip()
+        if any(kw in ql for kw in REASONING_KEYWORDS):
+            return None
+
+        # Word-boundary match: equal to, or starts with "<word> " — avoids "hi"→"history".
+        if any(ql == w or ql.startswith(w + " ") for w in INSTANT_SMALL):
+            return ComplexityScore(
+                score=1.0, tier="small",
+                reason="Simple greeting or basic query",
+                confidence=0.99, method="keyword_fallback",
+            )
+
+        # Very short queries with no reasoning signal are simple by default.
+        if len(query.split()) <= 3:
+            return ComplexityScore(
+                score=1.5, tier="small",
+                reason="Very short query — simple",
+                confidence=0.9, method="keyword_fallback",
+            )
+        return None
 
     def tier_for_score(self, score: float) -> str:
         """Map a complexity score (1-10) to a tier name (1-4 Small, 5-7 Large, 8-10 Reasoning)."""
@@ -88,9 +143,11 @@ class PromptClassifier:
     def classify_with_huggingface(self, query: str) -> ComplexityScore:
         """Use HuggingFace zero-shot classification to judge complexity by MEANING."""
         api_key = settings.huggingface_api_key
+        print(f"[HF DEBUG] Key present: {bool(api_key)}")
+        print(f"[HF DEBUG] Key value: {api_key[:10] if api_key else 'None'}")
         # Treat unset/placeholder keys as missing so we cleanly fall back.
         if not api_key or "your_" in api_key or "here" in api_key:
-            print("[Classifier] No HF key configured, using keyword fallback")
+            print("[Classifier] No/placeholder HF key, using keyword fallback")
             return self._keyword_fallback(query)
 
         try:
@@ -161,6 +218,11 @@ class PromptClassifier:
     # ── Keyword fallback path (feature-based scorer) ───────────────────────
 
     def _keyword_fallback(self, query: str) -> ComplexityScore:
+        # Defense-in-depth: greetings/short queries short-circuit to Small even if
+        # this is reached directly (the entry points already guard the raw query).
+        instant = self._instant_small(query)
+        if instant is not None:
+            return instant
         features = self.extract_features(query)
         result = self._score_from_features(features)
         result.method = "keyword_fallback"
@@ -194,16 +256,12 @@ class PromptClassifier:
         prompt_lower = features.get("prompt_text", "").lower()
         token_count = features.get("token_count", 0)
 
-        reasoning_keywords = [
-            "prove", "proof", "solve", "calculate", "theorem", "contradiction",
-            "\\sqrt", "\\[", "\\(", "equation", "integral", "derivative", "math",
-        ]
         analysis_keywords = [
             "explain", "analyze", "compare", "design", "strategy", "marketing",
             "positioning", "channels", "pricing", "write", "create", "how to", "steps",
         ]
 
-        has_reasoning = any(word in prompt_lower for word in reasoning_keywords)
+        has_reasoning = any(word in prompt_lower for word in REASONING_KEYWORDS)
         has_analysis = any(word in prompt_lower for word in analysis_keywords)
         length_bonus = min(2.0, token_count / 100.0)
 

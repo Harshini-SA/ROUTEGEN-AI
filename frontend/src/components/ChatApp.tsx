@@ -53,9 +53,22 @@ const ChatApp = () => {
   const [uploadedFiles, setUploadedFiles] = useState<{ filename: string; chunks: number }[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [elapsedMs, setElapsedMs] = useState(0);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const lastQueryRef = useRef<string>('');
+
+  // Tick an elapsed-time counter while a request is in flight, so we can surface
+  // "taking longer than usual" messaging (and a retry) without a blank spinner.
+  useEffect(() => {
+    if (!isRunning) { setElapsedMs(0); return; }
+    const startedAt = Date.now();
+    setElapsedMs(0);
+    const id = setInterval(() => setElapsedMs(Date.now() - startedAt), 500);
+    return () => clearInterval(id);
+  }, [isRunning]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -188,9 +201,15 @@ const ChatApp = () => {
     if (!queryToRun.trim() || isRunning) return;
 
     if (!forcedQuery) setInput('');
+    lastQueryRef.current = queryToRun;
     setMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', content: queryToRun }]);
     setIsRunning(true);
-    setLogs([]); 
+    setLogs([]);
+
+    // Allow the retry button to cancel an in-flight request before re-sending.
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     try {
       // Fetch a fresh session so the very first message isn't sent with a
@@ -215,7 +234,8 @@ const ChatApp = () => {
         body: JSON.stringify({
           query: queryToRun,
           session_id: sessionId  // pre-generated client-side so uploads can attach before the first message
-        })
+        }),
+        signal: controller.signal
       });
       const data = await res.json();
       console.log('API response:', data);
@@ -238,13 +258,34 @@ const ChatApp = () => {
       // Refresh recent sessions list and metrics
       fetchRecentSessions();
       fetchMetrics();
-    } catch (e) {
+    } catch (e: any) {
+      // A user-triggered retry aborts the previous request — that's not an error.
+      if (e?.name === 'AbortError') return;
       console.error(e);
       setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: "Error connecting to intelligent router." }]);
     } finally {
-      setIsRunning(false);
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        setIsRunning(false);
+      }
     }
   };
+
+  // Cancel the in-flight request and re-send the same query (used by the "taking a while" retry).
+  const handleRetry = () => {
+    const q = lastQueryRef.current;
+    if (!q) return;
+    abortRef.current?.abort();
+    setIsRunning(false);
+    // Defer so the isRunning guard in handleSend doesn't block the re-send.
+    setTimeout(() => handleSend(q), 0);
+  };
+
+  const currentTier = logs.find(l => l.node_id === 'query_parsing')?.tier_selected;
+  let timeoutThreshold = 20000;
+  if (currentTier === 'small') timeoutThreshold = 8000;
+  else if (currentTier === 'large') timeoutThreshold = 15000;
+  else if (currentTier === 'reasoning') timeoutThreshold = 25000;
 
   return (
     <div className="flex h-full w-full bg-background font-sans text-text-primary">
@@ -272,7 +313,7 @@ const ChatApp = () => {
         <div className="px-3 mt-1">
           <button
             onClick={handleNewChat}
-            className="w-full flex items-center space-x-3 px-3 py-2.5 rounded-lg bg-primary/10 text-primary font-medium border border-primary/20 hover:bg-primary/15 transition-colors"
+            className="w-full flex items-center space-x-3 px-3 py-2.5 rounded-lg bg-primary/10 text-primary font-medium border border-primary/20 hover:bg-primary/15 active:scale-[0.98] transition-all shadow-sm hover:shadow-md"
           >
             <Plus className="w-4 h-4" />
             <span className="text-sm">New Chat</span>
@@ -348,7 +389,7 @@ const ChatApp = () => {
       </div>
 
       {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col h-full relative w-full overflow-hidden">
+      <div className="flex-1 flex flex-col h-full relative w-full overflow-hidden bg-grid-dots">
         {compareMode ? (
           <CompareDashboard session={session} sessionId={sessionId} />
         ) : (
@@ -368,11 +409,12 @@ const ChatApp = () => {
         )}
 
         {messages.length === 0 ? (
-          <div className="flex-1 flex flex-col items-center justify-center p-6 mt-[-10vh]">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary/20 to-secondary/20 flex items-center justify-center mb-6">
+          <div className="flex-1 flex flex-col items-center justify-center p-6 mt-[-10vh] relative">
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-primary/10 rounded-full blur-[100px] animate-pulse-slow pointer-events-none"></div>
+            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary/20 to-secondary/20 flex items-center justify-center mb-6 relative z-10">
               <Compass className="w-8 h-8 text-primary" />
             </div>
-            <h1 className="text-3xl md:text-4xl font-bold mb-4 text-center">
+            <h1 className="text-3xl md:text-4xl font-bold mb-4 text-center relative z-10">
               Welcome to <span className="bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">RouteGen AI</span>
             </h1>
             <p className="text-text-secondary text-center max-w-2xl mb-12">
@@ -424,7 +466,7 @@ const ChatApp = () => {
                   <button
                     onClick={() => handleSend()}
                     disabled={isRunning || !input.trim()}
-                    className="p-2.5 bg-text-primary hover:bg-white text-background rounded-xl disabled:bg-border disabled:text-text-secondary disabled:cursor-not-allowed transition-all"
+                    className="p-2.5 bg-text-primary hover:bg-white active:scale-95 text-background rounded-xl disabled:bg-border disabled:text-text-secondary disabled:cursor-not-allowed disabled:active:scale-100 transition-all shadow-md hover:shadow-lg"
                   >
                     <Send className="w-4 h-4" />
                   </button>
@@ -437,7 +479,7 @@ const ChatApp = () => {
             <div className="flex-1 overflow-y-auto px-4 pb-32 pt-6 custom-scrollbar w-full">
               <div className="max-w-4xl mx-auto space-y-8 w-full">
                 {messages.map((msg) => (
-                  <div key={msg.id} className={`flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div key={msg.id} className={`flex w-full animate-fade-in-up ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                     {msg.role === 'user' ? (
                       <div className="bg-surface border border-border px-5 py-3 rounded-2xl max-w-[85%] shadow-sm">
                         <p className="text-text-primary leading-relaxed whitespace-pre-wrap">{msg.content}</p>
@@ -488,8 +530,27 @@ const ChatApp = () => {
                     <div className="w-8 h-8 rounded-lg bg-surface flex items-center justify-center border border-primary/30">
                       <Sparkles className="w-4 h-4 text-primary animate-pulse" />
                     </div>
-                    <div className="flex-1 min-w-0">
+                    <div className="flex-1 min-w-0 space-y-2">
+                      {/* Instant "something is happening" feedback */}
+                      <div className="typing-indicator" aria-label="Assistant is thinking">
+                        <span></span><span></span><span></span>
+                      </div>
                       <PipelineVisualizer live title="Routing through pipeline" />
+                      {elapsedMs > timeoutThreshold && (
+                        <p className="text-xs text-text-secondary">
+                          {elapsedMs > 45000
+                            ? 'This is taking a while.'
+                            : '⏳ Taking longer than usual — our reasoning model is working hard on this...'}
+                        </p>
+                      )}
+                      {elapsedMs > 45000 && (
+                        <button
+                          onClick={handleRetry}
+                          className="text-xs font-medium px-3 py-1.5 rounded-lg bg-surface border border-border text-text-primary hover:border-primary/50 transition-colors"
+                        >
+                          ↻ Try again with a faster model
+                        </button>
+                      )}
                     </div>
                   </div>
                 )}
@@ -538,7 +599,7 @@ const ChatApp = () => {
                   <button
                     onClick={() => handleSend()}
                     disabled={isRunning || !input.trim()}
-                    className="p-2 mb-1 mr-1 bg-text-primary hover:bg-white text-background rounded-xl disabled:bg-border disabled:text-text-secondary disabled:cursor-not-allowed transition-all"
+                    className="p-2 mb-1 mr-1 bg-text-primary hover:bg-white active:scale-95 text-background rounded-xl disabled:bg-border disabled:text-text-secondary disabled:cursor-not-allowed disabled:active:scale-100 transition-all shadow-md hover:shadow-lg"
                   >
                     <Send className="w-5 h-5" />
                   </button>

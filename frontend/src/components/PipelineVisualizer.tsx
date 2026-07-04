@@ -42,7 +42,7 @@ const NODES: { id: string; label: string }[] = [
   { id: 'final_formatting', label: 'Final Formatting' },
 ];
 
-const STAGGER_MS = 300;
+const STAGGER_MS = 100;
 
 // --- exact hexes from the design brief ---
 const C = {
@@ -124,7 +124,7 @@ const PipelineVisualizer: React.FC<PipelineVisualizerProps> = ({
     }
     if (autoCollapse) {
       timers.current.push(
-        setTimeout(() => setCollapsed(true), NODES.length * STAGGER_MS + 1400)
+        setTimeout(() => setCollapsed(true), NODES.length * STAGGER_MS + 800)
       );
     }
     return () => timers.current.forEach(clearTimeout);
@@ -133,7 +133,7 @@ const PipelineVisualizer: React.FC<PipelineVisualizerProps> = ({
   // Live sweep while the pipeline is actually running (no data yet).
   useEffect(() => {
     if (!live) return;
-    const id = setInterval(() => setSweep((s) => (s + 1) % NODES.length), 420);
+    const id = setInterval(() => setSweep((s) => (s + 1) % NODES.length), 200);
     return () => clearInterval(id);
   }, [live]);
 
