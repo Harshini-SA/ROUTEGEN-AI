@@ -21,6 +21,8 @@ interface Message {
   content: string;
   cost?: number;
   trace?: any[];
+  budget_downgrade?: boolean;
+  budget_downgrade_reason?: string;
 }
 
 interface SessionSummary {
@@ -57,6 +59,11 @@ const ChatApp = () => {
   // Cache stats state
   const [cacheStats, setCacheStats] = useState<any>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
+
+  // Budget Mode state
+  const [showBudgetModal, setShowBudgetModal] = useState(false);
+  const [budgetInput, setBudgetInput] = useState('');
+  const [budgetStatus, setBudgetStatus] = useState<any>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -151,6 +158,7 @@ const ChatApp = () => {
     fetchMetrics();
     fetchRecentSessions();
     fetchCacheStats();
+    fetchBudgetStatus();
 
     const ws = new WebSocket('ws://127.0.0.1:8000/ws/live');
     ws.onmessage = (event) => {
@@ -175,6 +183,37 @@ const ChatApp = () => {
     })
       .then(res => res.json())
       .then(data => setCacheStats(data))
+      .catch(console.error);
+  };
+
+  const fetchBudgetStatus = () => {
+    if (!sessionId) return;
+    fetch(`${API_BASE}/budget/status/${sessionId}`, {
+      headers: { 'Authorization': `Bearer ${session?.access_token}` }
+    })
+      .then(res => res.json())
+      .then(data => setBudgetStatus(data))
+      .catch(console.error);
+  };
+
+  const handleSetBudget = () => {
+    const limit = parseFloat(budgetInput);
+    if (isNaN(limit) || limit <= 0) return;
+    
+    fetch(`${API_BASE}/budget/${sessionId}`, {
+      method: 'POST',
+      headers: { 
+        'Authorization': `Bearer ${session?.access_token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ limit })
+    })
+      .then(res => res.json())
+      .then(() => {
+        setShowBudgetModal(false);
+        setBudgetInput('');
+        fetchBudgetStatus();
+      })
       .catch(console.error);
   };
 
@@ -205,6 +244,15 @@ const ChatApp = () => {
       if (data.error) return;
 
       setSessionId(sid);
+      
+      // Fetch budget status for the newly loaded session
+      fetch(`${API_BASE}/budget/status/${sid}`, {
+        headers: { 'Authorization': `Bearer ${session?.access_token}` }
+      })
+        .then(r => r.json())
+        .then(data => setBudgetStatus(data))
+        .catch(console.error);
+
       const messagesRaw = data.messages || [];
       const messages = messagesRaw.map((m: any) => {
         if (m.role === 'assistant' && m.cost !== undefined) {
@@ -368,7 +416,9 @@ const ChatApp = () => {
         role: 'assistant',
         content: data.report || "No response generated.",
         cost: data.total_cost,
-        trace: pipelineTrace
+        trace: pipelineTrace,
+        budget_downgrade: data.budget_downgrade,
+        budget_downgrade_reason: data.budget_downgrade_reason
       }]);
 
       if (data.logs) {
@@ -408,8 +458,9 @@ const ChatApp = () => {
         };
       });
 
-      // Refresh cache stats
+      // Refresh cache and budget stats
       fetchCacheStats();
+      fetchBudgetStatus();
     } catch (e: any) {
       // A user-triggered retry aborts the previous request — that's not an error.
       if (e?.name === 'AbortError') return;
@@ -472,7 +523,7 @@ const ChatApp = () => {
           </button>
         </div>
 
-        {/* Option Buttons (Compare, Observability) */}
+        {/* Option Buttons (Compare, Observability, Budget) */}
         <div className="p-3 border-b border-border space-y-1">
           <button 
             onClick={() => setCompareMode(!compareMode)}
@@ -494,6 +545,36 @@ const ChatApp = () => {
             </div>
             <ChevronRight className={`w-4 h-4 transition-transform ${showInsights ? 'rotate-90' : ''}`} />
           </button>
+          <button 
+            onClick={() => setShowBudgetModal(true)}
+            className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg transition-colors hover:bg-surface-hover text-text-secondary hover:text-text-primary`}
+          >
+            <div className="flex items-center space-x-3">
+              <span className="w-4 h-4 text-center">💰</span>
+              <span className="text-sm">Set Budget</span>
+            </div>
+          </button>
+          
+          {budgetStatus?.budget_set && (
+            <div className="mt-4 px-2">
+              <div className="flex justify-between items-center text-xs mb-1.5">
+                <span className="text-text-secondary uppercase tracking-wider font-semibold">Budget Used</span>
+                <span className="text-white font-mono">${budgetStatus.total_spent.toFixed(4)} / ${(budgetStatus.budget_limit || 0).toFixed(2)}</span>
+              </div>
+              <div className="budget-bar mb-2">
+                <div 
+                  className={`budget-fill ${budgetStatus.status}`}
+                  style={{width: `${Math.min(100, (budgetStatus.usage_pct || 0) * 100)}%`}}
+                />
+              </div>
+              {budgetStatus.forced_downgrades > 0 && (
+                <div className="text-[10px] text-warning/90 mt-1 flex items-start space-x-1 leading-tight">
+                  <span>⚠️</span>
+                  <span>{budgetStatus.forced_downgrades} queries downgraded to save budget</span>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Live Prompt Metrics Monitor */}
@@ -603,6 +684,43 @@ const ChatApp = () => {
 
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col h-full relative w-full overflow-hidden bg-grid-dots">
+        {/* Budget Modal */}
+        {showBudgetModal && (
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+            <div className="bg-surface border border-border p-6 rounded-2xl shadow-xl w-[320px] max-w-[90%]">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="font-bold text-lg">Set Session Budget</h3>
+                <button onClick={() => setShowBudgetModal(false)} className="text-text-secondary hover:text-text-primary">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <p className="text-sm text-text-secondary mb-4 leading-relaxed">
+                RouteGen will automatically use cheaper models as you approach this limit to prevent overspending.
+              </p>
+              <div className="mb-6 relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-text-secondary">$</span>
+                <input 
+                  type="number" 
+                  step="0.01"
+                  placeholder="e.g. 0.10"
+                  value={budgetInput}
+                  onChange={e => setBudgetInput(e.target.value)}
+                  className="w-full bg-background border border-border rounded-lg py-2.5 pl-8 pr-3 text-text-primary focus:outline-none focus:border-primary/50"
+                  autoFocus
+                  onKeyDown={e => { if(e.key === 'Enter') handleSetBudget(); }}
+                />
+              </div>
+              <button 
+                onClick={handleSetBudget}
+                disabled={!budgetInput}
+                className="w-full bg-primary text-background font-bold py-2.5 rounded-lg hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                Set Budget Limit
+              </button>
+            </div>
+          </div>
+        )}
+
         {compareMode ? (
           <CompareDashboard session={session} sessionId={sessionId} />
         ) : (
@@ -704,16 +822,25 @@ const ChatApp = () => {
                         </div>
                         <div className="flex-1 min-w-0 space-y-3">
                           {msg.trace && msg.trace.length > 0 && msg.trace[0].cache_hit && (
-                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-green-500/10 border border-green-500/20 shadow-[0_0_10px_rgba(16,185,129,0.1)]">
+                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-green-500/10 border border-green-500/20 shadow-[0_0_10px_rgba(16,185,129,0.1)] mb-1">
                               <Zap className="w-3.5 h-3.5 text-green-400" />
                               <span className="text-[10px] font-bold text-green-400 uppercase tracking-wider">Smart Cached</span>
                             </div>
                           )}
+                          {msg.budget_downgrade && (
+                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-warning/10 border border-warning/20 shadow-[0_0_10px_rgba(245,158,11,0.1)] mb-1 mt-1 block w-fit">
+                              <span className="text-[10px] font-bold text-warning uppercase tracking-wider flex items-center gap-1">
+                                💰 {msg.budget_downgrade_reason}
+                              </span>
+                            </div>
+                          )}
                           {/* Pipeline trace: appears between the user's message and this response */}
                           {msg.trace && msg.trace.length > 0 && (
-                            <PipelineVisualizer trace={msg.trace} autoCollapse={!msg.isHistorical} defaultCollapsed={msg.isHistorical} />
+                            <div className="mt-1">
+                              <PipelineVisualizer trace={msg.trace} autoCollapse={!msg.isHistorical} defaultCollapsed={msg.isHistorical} />
+                            </div>
                           )}
-                          <div className="pt-1 text-text-primary prose prose-invert prose-sm sm:prose-base prose-p:leading-relaxed prose-pre:bg-surface prose-pre:border prose-pre:border-border">
+                          <div className="pt-2 text-text-primary prose prose-invert prose-sm sm:prose-base prose-p:leading-relaxed prose-pre:bg-surface prose-pre:border prose-pre:border-border">
                             <ReactMarkdown
                               remarkPlugins={[remarkMath]}
                               rehypePlugins={[rehypeKatex]}

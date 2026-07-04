@@ -8,6 +8,7 @@ from app.core.classifier import classifier
 from app.core.fallback import fallback_manager
 from app.pipeline.demo_pipeline import demo_pipeline
 from app.core.smart_cache import smart_cache
+from app.core.budget_manager import budget_manager
 from app.core.router import IntelligentRouter, classify_complexity
 from app.core.db import db_store
 from app.core.rag_store import rag_store
@@ -58,6 +59,12 @@ class PipelineRequest(BaseModel):
     query: str
     compare: bool = False
     session_id: Optional[str] = None
+
+def get_tier_cost_estimate(tier: str) -> float:
+    if tier == "small": return 0.0001
+    if tier == "large": return 0.001
+    if tier == "reasoning": return 0.005
+    return 0.001
 
 @router.post("/pipeline/run", tags=["Pipeline"])
 async def run_pipeline(request: PipelineRequest, user_id: str = Depends(get_current_user)):
@@ -115,6 +122,25 @@ async def run_pipeline(request: PipelineRequest, user_id: str = Depends(get_curr
 
     # 4. RAG — retrieve relevant chunks from any documents uploaded to this session
     rag = _build_rag_context(sid, request.query)
+    
+    # 5. Classify complexity and run Budget Manager check
+    from app.core.classifier import classifier
+    complexity = classifier.score_prompt_in_context(rag["prompt"], conversation_history)
+    
+    # Adjust for RAG
+    if rag["used"]:
+        complexity.score = min(10.0, complexity.score + 1)
+        complexity.tier = classifier.tier_for_score(complexity.score)
+        
+    original_tier = complexity.tier
+    estimated_cost = get_tier_cost_estimate(original_tier)
+    
+    final_tier, was_downgraded, downgrade_reason = budget_manager.check_and_adjust_tier(sid, original_tier, estimated_cost)
+    
+    if was_downgraded:
+        print(f"[Budget] Downgraded {original_tier} → {final_tier}: {downgrade_reason}")
+        complexity.tier = final_tier
+        complexity.reason = downgrade_reason
 
     initial_state = {
         "session_id": sid,
@@ -129,7 +155,8 @@ async def run_pipeline(request: PipelineRequest, user_id: str = Depends(get_curr
         "routing_logs": [],
         "rag_used": rag["used"],
         "rag_chunk_count": rag["chunk_count"],
-        "rag_sources": rag["sources"]
+        "rag_sources": rag["sources"],
+        "locked_complexity": complexity
     }
 
     if request.compare:
@@ -207,6 +234,9 @@ Return ONLY valid JSON: {{"score_a": 8, "score_b": 7, "reason": "..."}}"""
         assistant_response = final_state.get("final_report", "")
         db_store.append_message(sid, "assistant", assistant_response, cost=final_state.get("total_cost", 0.0), energy_joules=final_state.get("total_joules", 0.0), energy_gco2e=final_state.get("total_gco2e", 0.0))
         
+        # Record actual spend in budget manager
+        budget_manager.record_spend(sid, final_state.get("total_cost", 0.0))
+        
         # Store in cache after successful run
         smart_cache.store(
             query=request.query,
@@ -222,7 +252,10 @@ Return ONLY valid JSON: {{"score_a": 8, "score_b": 7, "reason": "..."}}"""
             "total_cost": final_state.get("total_cost", 0.0),
             "total_joules": final_state.get("total_joules", 0.0),
             "total_gco2e": final_state.get("total_gco2e", 0.0),
-            "logs": final_state.get("routing_logs")
+            "logs": final_state.get("routing_logs"),
+            "budget_downgrade": was_downgraded,
+            "budget_downgrade_reason": downgrade_reason,
+            "original_tier": original_tier
         }
 
 
@@ -460,6 +493,8 @@ async def get_metrics(user_id: str = Depends(get_current_user)):
     """Return real aggregated metrics for the dashboard."""
     return db_store.get_user_metrics(user_id)
 
+# --- Cache & Budget Endpoints ---
+
 @router.get("/cache/stats", tags=["Cache"])
 async def get_cache_stats():
     """Return semantic cache statistics."""
@@ -470,6 +505,20 @@ async def clear_cache():
     """Clear the semantic cache."""
     smart_cache.clear()
     return {"status": "cleared"}
+
+class BudgetRequest(BaseModel):
+    limit: float
+
+@router.post("/budget/{session_id}", tags=["Budget"])
+async def set_budget(session_id: str, request: BudgetRequest):
+    """Set the cost budget limit for a session."""
+    budget_manager.set_budget(session_id, request.limit)
+    return {"status": "set", "limit": request.limit}
+
+@router.get("/budget/status/{session_id}", tags=["Budget"])
+async def get_budget_status(session_id: str):
+    """Get the current budget status for a session."""
+    return budget_manager.get_status(session_id)
 
 # --- WebSocket for Live Logs ---
 class ConnectionManager:

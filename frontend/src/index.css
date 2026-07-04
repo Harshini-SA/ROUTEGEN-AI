@@ -120,6 +120,32 @@ body {
   }
 }
 
+/* --- Cost Budget Mode --- */
+.budget-bar {
+  height: 6px;
+  background: rgba(255,255,255,0.1);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.budget-fill {
+  height: 100%;
+  transition: width 0.3s ease;
+}
+
+.budget-fill.healthy { background: #10B981; }
+.budget-fill.warning { background: #F59E0B; }
+.budget-fill.critical { 
+  background: #EF4444; 
+  animation: pulse-red 1s infinite;
+}
+
+@keyframes pulse-red {
+  0% { opacity: 1; }
+  50% { opacity: 0.6; }
+  100% { opacity: 1; }
+}
+
 .animate-fade-in-up {
   animation: fade-in-up 0.4s ease-out forwards;
 }
