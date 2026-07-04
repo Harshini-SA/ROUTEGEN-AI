@@ -4,6 +4,7 @@ import LandingPage from './components/LandingPage';
 import AuthPage from './components/AuthPage';
 import AuthWrapper from './components/AuthWrapper';
 import ChatApp from './components/ChatApp';
+import 'katex/dist/katex.min.css';
 
 function App() {
   return (

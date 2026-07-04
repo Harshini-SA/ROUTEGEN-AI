@@ -3,8 +3,12 @@ import CostPanel from './panels/CostPanel';
 import RoutingLogTable from './panels/RoutingLogTable';
 import DocumentsPanel from './panels/DocumentsPanel';
 import CompareDashboard from './CompareDashboard';
+import PipelineVisualizer from './PipelineVisualizer';
 import { Send, Sparkles, Activity, Clock, Compass, Zap, Settings, ChevronRight, Menu, Plus, Scale, MessageSquare, Search, LogOut, User, Paperclip, X, Loader2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
 import { useOutletContext } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 
@@ -15,6 +19,7 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   cost?: number;
+  trace?: any[];
 }
 
 interface SessionSummary {
@@ -187,11 +192,15 @@ const ChatApp = () => {
       });
       const data = await res.json();
 
+      // Clone the trace in pipeline order BEFORE the sidebar log reverse mutates it.
+      const pipelineTrace = Array.isArray(data.logs) ? [...data.logs] : [];
+
       setMessages(prev => [...prev, {
         id: Date.now().toString(),
         role: 'assistant',
         content: data.final_report || "No response generated.",
-        cost: data.total_cost
+        cost: data.total_cost,
+        trace: pipelineTrace
       }]);
 
       if (data.logs) {
@@ -405,12 +414,36 @@ const ChatApp = () => {
                         <p className="text-text-primary leading-relaxed whitespace-pre-wrap">{msg.content}</p>
                       </div>
                     ) : (
-                      <div className="flex items-start space-x-4 max-w-[100%]">
+                      <div className="flex items-start space-x-4 max-w-[100%] w-full">
                         <div className="w-8 h-8 rounded-lg bg-surface flex flex-shrink-0 items-center justify-center border border-primary/30 shadow-[0_0_10px_rgba(6,182,212,0.2)]">
                           <Compass className="w-5 h-5 text-primary" />
                         </div>
-                        <div className="pt-1 text-text-primary prose prose-invert prose-sm sm:prose-base prose-p:leading-relaxed prose-pre:bg-surface prose-pre:border prose-pre:border-border">
-                          <ReactMarkdown>{msg.content}</ReactMarkdown>
+                        <div className="flex-1 min-w-0 space-y-3">
+                          {/* Pipeline trace: appears between the user's message and this response */}
+                          {msg.trace && msg.trace.length > 0 && (
+                            <PipelineVisualizer trace={msg.trace} autoCollapse />
+                          )}
+                          <div className="pt-1 text-text-primary prose prose-invert prose-sm sm:prose-base prose-p:leading-relaxed prose-pre:bg-surface prose-pre:border prose-pre:border-border">
+                            <ReactMarkdown
+                              remarkPlugins={[remarkMath]}
+                              rehypePlugins={[rehypeKatex]}
+                              components={{
+                                ul: ({node, ...props}: any) => <ul className="list-disc ml-4 my-2 space-y-1" {...props} />,
+                                ol: ({node, ...props}: any) => <ol className="list-decimal ml-4 my-2 space-y-1" {...props} />,
+                                li: ({node, ...props}: any) => <li className="ml-2" {...props} />,
+                                h1: ({node, ...props}: any) => <h1 className="text-xl font-bold my-3" {...props} />,
+                                h2: ({node, ...props}: any) => <h2 className="text-lg font-bold my-2" {...props} />,
+                                h3: ({node, ...props}: any) => <h3 className="text-base font-semibold my-2" {...props} />,
+                                code: ({node, inline, ...props}: any) => inline
+                                  ? <code className="bg-gray-800 px-1 rounded text-sm font-mono" {...props} />
+                                  : <code className="block bg-gray-800 p-3 rounded my-2 text-sm font-mono overflow-x-auto" {...props} />,
+                                p: ({node, ...props}: any) => <p className="my-2 leading-relaxed" {...props} />,
+                                strong: ({node, ...props}: any) => <strong className="font-bold" {...props} />,
+                              }}
+                            >
+                              {msg.content}
+                            </ReactMarkdown>
+                          </div>
                         </div>
                       </div>
                     )}
@@ -418,12 +451,12 @@ const ChatApp = () => {
                 ))}
 
                 {isRunning && (
-                  <div className="flex items-start space-x-4">
+                  <div className="flex items-start space-x-4 w-full">
                     <div className="w-8 h-8 rounded-lg bg-surface flex items-center justify-center border border-primary/30">
                       <Sparkles className="w-4 h-4 text-primary animate-pulse" />
                     </div>
-                    <div className="pt-1 text-text-secondary text-sm flex flex-col space-y-1">
-                      <span>Routing through pipeline...</span>
+                    <div className="flex-1 min-w-0">
+                      <PipelineVisualizer live title="Routing through pipeline" />
                     </div>
                   </div>
                 )}

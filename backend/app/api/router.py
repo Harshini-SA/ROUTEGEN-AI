@@ -293,14 +293,16 @@ Return ONLY valid JSON, no extra text:
             "cost": routed_cost,
             "latency_ms": routed_latency_ms,
             "response": routed_response,
-            "scores": routed_scores
+            "scores": routed_scores,
+            "trace": routed_logs
         },
         "baseline": {
             "model": BASELINE_MODEL,
             "cost": baseline_cost,
             "latency_ms": baseline_latency_ms,
             "response": baseline_response,
-            "scores": baseline_scores
+            "scores": baseline_scores,
+            "trace": baseline_state.get("routing_logs", [])
         },
         "savings": {
             "cost_savings_usd": cost_savings_usd,

@@ -1,7 +1,10 @@
 import React, { useState } from 'react';
 import { Scale, DollarSign, Award, Zap, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, ReferenceLine } from 'recharts';
+import PipelineVisualizer from './PipelineVisualizer';
 
 interface Scores {
   correctness: number;
@@ -19,6 +22,7 @@ interface CompareResult {
     latency_ms: number;
     response: string;
     scores: Scores;
+    trace?: any[];
   };
   baseline: {
     model: string;
@@ -26,6 +30,7 @@ interface CompareResult {
     latency_ms: number;
     response: string;
     scores: Scores;
+    trace?: any[];
   };
   savings: {
     cost_savings_usd: number;
@@ -165,6 +170,15 @@ const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId 
               </div>
             </div>
 
+            {/* Side-by-side pipelines — judges can see which nodes use which models */}
+            <div>
+              <h3 className="text-xs font-semibold uppercase text-text-secondary mb-2">Pipeline Comparison</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <PipelineVisualizer trace={result.routed.trace} orientation="vertical" title="🤖 Smart Routing" />
+                <PipelineVisualizer trace={result.baseline.trace} orientation="vertical" title="💰 Single Model Baseline" />
+              </div>
+            </div>
+
             {/* Two Columns */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {/* Routed */}
@@ -194,7 +208,25 @@ const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId 
                   </div>
                 </div>
                 <div className="flex-1 max-h-64 overflow-y-auto bg-background rounded-lg border border-border p-3 prose prose-invert prose-sm custom-scrollbar">
-                  <ReactMarkdown>{result.routed.response || '_No response generated._'}</ReactMarkdown>
+                  <ReactMarkdown
+                    remarkPlugins={[remarkMath]}
+                    rehypePlugins={[rehypeKatex]}
+                    components={{
+                      ul: ({node, ...props}: any) => <ul className="list-disc ml-4 my-2 space-y-1" {...props} />,
+                      ol: ({node, ...props}: any) => <ol className="list-decimal ml-4 my-2 space-y-1" {...props} />,
+                      li: ({node, ...props}: any) => <li className="ml-2" {...props} />,
+                      h1: ({node, ...props}: any) => <h1 className="text-xl font-bold my-3" {...props} />,
+                      h2: ({node, ...props}: any) => <h2 className="text-lg font-bold my-2" {...props} />,
+                      h3: ({node, ...props}: any) => <h3 className="text-base font-semibold my-2" {...props} />,
+                      code: ({node, inline, ...props}: any) => inline 
+                        ? <code className="bg-gray-800 px-1 rounded text-sm font-mono" {...props} />
+                        : <code className="block bg-gray-800 p-3 rounded my-2 text-sm font-mono overflow-x-auto" {...props} />,
+                      p: ({node, ...props}: any) => <p className="my-2 leading-relaxed" {...props} />,
+                      strong: ({node, ...props}: any) => <strong className="font-bold" {...props} />,
+                    }}
+                  >
+                    {result.routed.response || '_No response generated._'}
+                  </ReactMarkdown>
                 </div>
               </div>
 
@@ -225,7 +257,25 @@ const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId 
                   </div>
                 </div>
                 <div className="flex-1 max-h-64 overflow-y-auto bg-background rounded-lg border border-border p-3 prose prose-invert prose-sm custom-scrollbar">
-                  <ReactMarkdown>{result.baseline.response || '_No response generated._'}</ReactMarkdown>
+                  <ReactMarkdown
+                    remarkPlugins={[remarkMath]}
+                    rehypePlugins={[rehypeKatex]}
+                    components={{
+                      ul: ({node, ...props}: any) => <ul className="list-disc ml-4 my-2 space-y-1" {...props} />,
+                      ol: ({node, ...props}: any) => <ol className="list-decimal ml-4 my-2 space-y-1" {...props} />,
+                      li: ({node, ...props}: any) => <li className="ml-2" {...props} />,
+                      h1: ({node, ...props}: any) => <h1 className="text-xl font-bold my-3" {...props} />,
+                      h2: ({node, ...props}: any) => <h2 className="text-lg font-bold my-2" {...props} />,
+                      h3: ({node, ...props}: any) => <h3 className="text-base font-semibold my-2" {...props} />,
+                      code: ({node, inline, ...props}: any) => inline 
+                        ? <code className="bg-gray-800 px-1 rounded text-sm font-mono" {...props} />
+                        : <code className="block bg-gray-800 p-3 rounded my-2 text-sm font-mono overflow-x-auto" {...props} />,
+                      p: ({node, ...props}: any) => <p className="my-2 leading-relaxed" {...props} />,
+                      strong: ({node, ...props}: any) => <strong className="font-bold" {...props} />,
+                    }}
+                  >
+                    {result.baseline.response || '_No response generated._'}
+                  </ReactMarkdown>
                 </div>
               </div>
             </div>
