@@ -92,6 +92,8 @@ async def base_node(state: PipelineState, node_name: str, prompt: str, assertion
             "cost_usd": cost,
             "energy_joules": energy_joules,
             "energy_gco2e": energy_gco2e,
+            "input_tokens": in_tok,
+            "output_tokens": out_tok,
             "fallback_triggered": False,
             "cache_hit": False
         }
@@ -158,6 +160,8 @@ async def base_node(state: PipelineState, node_name: str, prompt: str, assertion
         "cost_usd": 0.0 if cache_hit else result.get("cost_usd", 0.0),
         "energy_joules": 0.0 if cache_hit else result.get("energy_joules", 0.0),
         "energy_gco2e": 0.0 if cache_hit else result.get("energy_gco2e", 0.0),
+        "input_tokens": 0 if cache_hit else result.get("input_tokens", 0),
+        "output_tokens": 0 if cache_hit else result.get("output_tokens", 0),
         "fallback_triggered": False if cache_hit else result.get("fallback_triggered", False),
         "tier_escalated": False if cache_hit else result.get("tier_escalated", False),
         "primary_model": None if cache_hit else result.get("primary_model"),

@@ -1,6 +1,11 @@
 import asyncio
 import os
+import sys
 from dotenv import load_dotenv
+
+# Ensure stdout uses UTF-8 to prevent charmap errors on Windows
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
 
 # Load env before importing app modules
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))

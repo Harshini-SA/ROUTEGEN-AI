@@ -125,7 +125,16 @@ class DBStore:
         }
 
     def get_user_metrics(self, user_id: str) -> Dict:
-        if not db: return {}
+        if not db:
+            return {
+                "routegen_cost": 0.0,
+                "routegen_joules": 0.0,
+                "baseline_cost": 0.0,
+                "baseline_joules": 0.0,
+                "total_runs": 0,
+                "total_savings_pct": 0.0,
+                "energy_savings_pct": 0.0
+            }
         
         # Get all sessions for this user
         sessions_res = db.table("sessions").select("id").eq("user_id", user_id).execute()

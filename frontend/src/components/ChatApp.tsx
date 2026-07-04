@@ -61,6 +61,54 @@ const ChatApp = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
+  const getLiveMetrics = () => {
+    let cost = 0;
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let joules = 0;
+    let activeNode = null;
+    let activeModel = null;
+    let activeTier = null;
+
+    if (logs && logs.length > 0) {
+      // Deduplicate by node_id to avoid doubling metrics if both REST response and WS logs arrive
+      const uniqueLogs = [];
+      const seenNodes = new Set();
+      for (const log of logs) {
+        if (log && log.node_id && !seenNodes.has(log.node_id)) {
+          seenNodes.add(log.node_id);
+          uniqueLogs.push(log);
+        }
+      }
+
+      uniqueLogs.forEach(log => {
+        cost += log.cost_usd || 0;
+        inputTokens += log.input_tokens || 0;
+        outputTokens += log.output_tokens || 0;
+        joules += log.energy_joules || 0;
+      });
+
+      const latestLog = uniqueLogs[0];
+      if (latestLog) {
+        activeNode = latestLog.node_id;
+        activeModel = latestLog.model_used;
+        activeTier = latestLog.tier_selected;
+      }
+    }
+
+    return {
+      cost,
+      inputTokens,
+      outputTokens,
+      joules,
+      activeNode,
+      activeModel,
+      activeTier
+    };
+  };
+
+  const live = getLiveMetrics();
+
   useEffect(() => {
     scrollToBottom();
   }, [messages, isRunning]);
@@ -303,6 +351,66 @@ const ChatApp = () => {
             </>
           )}
         </div>
+
+        {/* Live Prompt Metrics Monitor */}
+        {logs.length > 0 && (
+          <div className="mx-3 my-3 p-4 bg-gradient-to-b from-surface/90 to-surface/55 border border-border/95 rounded-xl space-y-4 shadow-lg backdrop-blur-sm animate-fade-in">
+            <div className="flex items-center justify-between pb-1 border-b border-border/40">
+              <span className="text-xs font-bold text-primary uppercase tracking-wider flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-primary animate-ping"></span>
+                Live Prompt Metrics
+              </span>
+              {isRunning && (
+                <span className="text-xs bg-primary/20 text-primary px-2 py-0.5 rounded font-medium animate-pulse">
+                  Running...
+                </span>
+              )}
+            </div>
+            
+            <div className="space-y-3 text-sm">
+              <div className="flex justify-between items-center">
+                <span className="text-text-secondary text-[13px]">Active Node:</span>
+                <span className="font-semibold text-white truncate max-w-[130px]" title={live.activeNode || "idle"}>
+                  {live.activeNode ? live.activeNode.replace(/_/g, ' ') : 'idle'}
+                </span>
+              </div>
+              
+              <div className="flex justify-between items-center">
+                <span className="text-text-secondary text-[13px]">Selected Tier:</span>
+                <span className={`font-semibold capitalize px-2 py-0.5 rounded text-xs ${
+                  live.activeTier === 'reasoning' ? 'bg-secondary/20 text-secondary' :
+                  live.activeTier === 'large' ? 'bg-primary/20 text-primary' :
+                  live.activeTier === 'baseline' ? 'bg-gray-800 text-gray-300' :
+                  'bg-success/20 text-success'
+                }`}>
+                  {live.activeTier || 'none'}
+                </span>
+              </div>
+
+              <div className="flex justify-between items-center">
+                <span className="text-text-secondary text-[13px]">Tokens Used:</span>
+                <span className="font-bold text-white text-[13px]">
+                  {live.inputTokens + live.outputTokens} <span className="text-xs font-normal text-text-secondary">({live.inputTokens}in / {live.outputTokens}out)</span>
+                </span>
+              </div>
+
+              <div className="flex justify-between items-center">
+                <span className="text-text-secondary text-[13px]">Cost (USD):</span>
+                <span className="font-bold text-success text-[14px]">
+                  ${live.cost.toFixed(5)}
+                </span>
+              </div>
+
+              <div className="flex justify-between items-center">
+                <span className="text-text-secondary text-[13px]">Energy:</span>
+                <span className="font-bold text-warning flex items-center gap-1.5 text-[13px]">
+                  <Zap className="w-4 h-4" />
+                  {live.joules.toFixed(2)} Joules
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="p-3 border-t border-border space-y-1">
           <button 
