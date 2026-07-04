@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import CostPanel from './panels/CostPanel';
 import RoutingLogTable from './panels/RoutingLogTable';
 import DocumentsPanel from './panels/DocumentsPanel';
@@ -45,6 +45,9 @@ const ChatApp = () => {
   const { session } = useOutletContext<{ session: any }>();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
+  const predictionTimer = useRef<any>(null);
+  const [predictedTier, setPredictedTier] = useState<string | null>(null);
+  const [predictionConfidence, setPredictionConfidence] = useState<number>(0);
   const [isRunning, setIsRunning] = useState(false);
   const [logs, setLogs] = useState<any[]>([]);
   const [metrics, setMetrics] = useState<any>(null);
@@ -364,11 +367,68 @@ const ChatApp = () => {
     }
   };
 
+  const handleInputChange = useCallback(
+    (value: string) => {
+      setInput(value);
+      
+      // Clear previous timer
+      if (predictionTimer.current) {
+        clearTimeout(predictionTimer.current);
+      }
+      
+      // Only predict if 3+ words typed
+      const wordCount = value.trim().split(/\s+/).filter(Boolean).length;
+      
+      if (wordCount < 3) {
+        setPredictedTier(null);
+        return;
+      }
+      
+      // Debounce 400ms — don't spam API
+      predictionTimer.current = setTimeout(
+        async () => {
+          try {
+            const { data: { session: freshSession } } = await supabase.auth.getSession();
+            const token = freshSession?.access_token || "mock-access-token";
+            
+            console.log("🔮 Predicting tier for:", value, "Token:", token);
+            const res = await fetch(
+              `${API_BASE}/predict-tier`,
+              {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                  partial_query: value
+                })
+              }
+            );
+            const data = await res.json();
+            console.log("🔮 Predicted tier result:", data);
+            setPredictedTier(data.predicted_tier);
+            setPredictionConfidence(data.confidence);
+          } catch (e) {
+            console.error("Predict tier failed:", e);
+          }
+        }, 
+        400
+      );
+    },
+    []
+  );
+
   const handleSend = async (forcedQuery?: string) => {
     const queryToRun = forcedQuery || input;
     if (!queryToRun.trim() || isRunning) return;
 
-    if (!forcedQuery) setInput('');
+    const tierHint = predictedTier; // Save prediction before resetting input/state
+
+    if (!forcedQuery) {
+      setInput('');
+      setPredictedTier(null);
+    }
     lastQueryRef.current = queryToRun;
     setMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', content: queryToRun }]);
     setIsRunning(true);
@@ -401,7 +461,8 @@ const ChatApp = () => {
         },
         body: JSON.stringify({
           query: queryToRun,
-          session_id: sessionId  // pre-generated client-side so uploads can attach before the first message
+          session_id: sessionId,  // pre-generated client-side so uploads can attach before the first message
+          predicted_tier: tierHint || null
         }),
         signal: controller.signal
       });
@@ -753,6 +814,13 @@ const ChatApp = () => {
             </p>
 
             <div className="w-full max-w-3xl relative group">
+              {predictedTier && (
+                <div className="prediction-badge">
+                  {predictedTier === 'small' && '⚡ Simple query detected'}
+                  {predictedTier === 'large' && '🧠 Analysis query detected'}
+                  {predictedTier === 'reasoning' && '🔬 Complex reasoning detected'}
+                </div>
+              )}
               {uploadedFiles.length > 0 && (
                 <div className="flex flex-wrap gap-2 mb-3">
                   {uploadedFiles.map((f, i) => (
@@ -767,7 +835,7 @@ const ChatApp = () => {
               <div className="relative bg-surface rounded-2xl border border-border p-2">
                 <textarea
                   value={input}
-                  onChange={(e) => setInput(e.target.value)}
+                  onChange={(e) => handleInputChange(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault();
@@ -907,6 +975,13 @@ const ChatApp = () => {
             {/* Sticky Input Bar */}
             <div className="absolute bottom-0 w-full bg-gradient-to-t from-background via-background to-transparent pt-10 pb-6 px-4">
               <div className="max-w-3xl mx-auto relative group">
+                {predictedTier && (
+                  <div className="prediction-badge">
+                    {predictedTier === 'small' && '⚡ Simple query detected'}
+                    {predictedTier === 'large' && '🧠 Analysis query detected'}
+                    {predictedTier === 'reasoning' && '🔬 Complex reasoning detected'}
+                  </div>
+                )}
                 {uploadedFiles.length > 0 && (
                   <div className="flex flex-wrap gap-2 mb-2">
                     {uploadedFiles.map((f, i) => (
@@ -929,7 +1004,7 @@ const ChatApp = () => {
                   </button>
                   <textarea
                     value={input}
-                    onChange={(e) => setInput(e.target.value)}
+                    onChange={(e) => handleInputChange(e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' && !e.shiftKey) {
                         e.preventDefault();

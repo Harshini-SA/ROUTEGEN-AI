@@ -292,5 +292,16 @@ class PromptClassifier:
             method="keyword_fallback",
         )
 
+    def predict_tier_fast(self, partial_query: str) -> Dict[str, Any]:
+        """Lightweight fast prediction path using keyword fallback only."""
+        result = self._keyword_fallback(partial_query)
+        models = settings.get_models_for_tier(result.tier)
+        predicted_model = models[0] if models else "unknown"
+        return {
+            "predicted_tier": result.tier,
+            "confidence": result.confidence,
+            "predicted_model": predicted_model
+        }
+
 
 classifier = PromptClassifier()

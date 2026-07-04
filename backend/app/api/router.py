@@ -1,6 +1,10 @@
 import os
+import time
 import uuid
 import tempfile
+import logging
+
+logger = logging.getLogger("routegen.api")
 from typing import Dict, Any, List, Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, UploadFile, File, Form
 from pydantic import BaseModel
@@ -59,6 +63,19 @@ class PipelineRequest(BaseModel):
     query: str
     compare: bool = False
     session_id: Optional[str] = None
+    predicted_tier: Optional[str] = None
+
+class PredictRequest(BaseModel):
+    partial_query: str
+
+@router.post("/predict-tier", tags=["Pipeline"])
+async def predict_tier(request: PredictRequest, user_id: str = Depends(get_current_user)):
+    """Predict complexity tier for typing debounce."""
+    start = time.time()
+    res = classifier.predict_tier_fast(request.partial_query)
+    latency_ms = (time.time() - start) * 1000
+    logger.info(f"⚡ Predict tier: '{request.partial_query[:30]}...' -> {res.get('predicted_tier')} | Latency: {latency_ms:.2f}ms")
+    return res
 
 def get_tier_cost_estimate(tier: str) -> float:
     if tier == "small": return 0.0001
@@ -125,7 +142,21 @@ async def run_pipeline(request: PipelineRequest, user_id: str = Depends(get_curr
     
     # 5. Classify complexity and run Budget Manager check
     from app.core.classifier import classifier
-    complexity = classifier.score_prompt_in_context(rag["prompt"], conversation_history)
+    if request.predicted_tier:
+        from app.core.classifier import ComplexityScore
+        score_map = {"small": 2.5, "large": 6.0, "reasoning": 9.0}
+        tier = request.predicted_tier
+        score = score_map.get(tier, 2.5)
+        complexity = ComplexityScore(
+            score=score,
+            tier=tier,
+            reason="Pre-predicted while typing",
+            confidence=1.0,
+            method="pre-predicted"
+        )
+        logger.info(f"Using predicted tier: {tier} (skipped classifier)")
+    else:
+        complexity = classifier.score_prompt_in_context(rag["prompt"], conversation_history)
     
     # Adjust for RAG
     if rag["used"]:
@@ -156,7 +187,8 @@ async def run_pipeline(request: PipelineRequest, user_id: str = Depends(get_curr
         "rag_used": rag["used"],
         "rag_chunk_count": rag["chunk_count"],
         "rag_sources": rag["sources"],
-        "locked_complexity": complexity
+        "locked_complexity": complexity,
+        "predicted_tier": request.predicted_tier
     }
 
     if request.compare:

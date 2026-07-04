@@ -67,6 +67,7 @@ class PipelineState(TypedDict):
     rag_chunk_count: int
     rag_sources: List[str]
     locked_complexity: Optional[ComplexityScore]  # Tier decision made once at query_parsing, reused by every node
+    predicted_tier: Optional[str]
 
 
 async def base_node(state: PipelineState, node_name: str, prompt: str, assertions: List[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -145,6 +146,21 @@ async def base_node(state: PipelineState, node_name: str, prompt: str, assertion
     locked_complexity = state.get("locked_complexity")
     if locked_complexity is not None:
         complexity = locked_complexity
+    elif state.get("predicted_tier"):
+        # Trust pre-predicted tier, skip classifier
+        from app.core.classifier import ComplexityScore
+        score_map = {"small": 2.5, "large": 6.0, "reasoning": 9.0}
+        tier = state["predicted_tier"]
+        score = score_map.get(tier, 2.5)
+        complexity = ComplexityScore(
+            score=score,
+            tier=tier,
+            reason="Pre-predicted while typing",
+            confidence=1.0,
+            method="pre-predicted"
+        )
+        import logging
+        logging.getLogger("routegen.pipeline").info(f"Using predicted tier: {tier} (skipped classifier)")
     else:
         complexity = classifier.score_prompt_in_context(state["query"], conversation_history)
 

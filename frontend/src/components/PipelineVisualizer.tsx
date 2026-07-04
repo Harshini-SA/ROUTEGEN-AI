@@ -75,6 +75,9 @@ const fmtMs = (ms?: number) => {
 // e.g. "HuggingFace: 'complex reasoning' (94% confident)" or "Keyword fallback".
 function nodeClassification(t?: TraceEntry): string {
   if (!t?.classification_method) return '';
+  if (t.classification_method === 'pre-predicted') {
+    return '⚡ Pre-predicted while typing';
+  }
   const pct = t.classification_confidence != null ? ` (${Math.round(t.classification_confidence * 100)}% confident)` : '';
   if (t.classification_method === 'huggingface') {
     // classification_reason already reads "HuggingFace classified as '<label>' with N% confidence"
