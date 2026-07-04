@@ -131,7 +131,15 @@ const ChatApp = () => {
       headers: { 'Authorization': `Bearer ${session?.access_token}` }
     })
       .then(res => res.json())
-      .then(data => setMetrics(data))
+      .then(data => setMetrics({ 
+        ...data, 
+        baseline_cost: 0, 
+        routegen_cost: 0, 
+        baseline_joules: 0, 
+        routegen_joules: 0, 
+        total_savings_pct: 0, 
+        energy_savings_pct: 0 
+      }))
       .catch(console.error);
   };
 
@@ -173,6 +181,7 @@ const ChatApp = () => {
     setLogs([]);
     setUploadedFiles([]);
     setUploadError(null);
+    setMetrics((prev: any) => prev ? { ...prev, baseline_cost: 0, routegen_cost: 0, baseline_joules: 0, routegen_joules: 0, total_savings_pct: 0, energy_savings_pct: 0 } : null);
   };
 
   const handleLoadSession = async (sid: string) => {
@@ -184,15 +193,51 @@ const ChatApp = () => {
       if (data.error) return;
 
       setSessionId(sid);
-      setMessages(
-        data.messages.map((msg: any, i: number) => ({
-          id: `${sid}-${i}`,
-          role: msg.role,
-          content: msg.content,
-        }))
-      );
+      const messages = data.messages || [];
+      setMessages(messages);
       setLogs([]);
-      fetchDocuments(sid);
+      setUploadedFiles([]);
+      setUploadError(null);
+
+      // Calculate historical metrics for the loaded session
+      let historicalCost = 0;
+      let historicalBaselineCost = 0;
+      let historicalRuns = 0;
+
+      messages.forEach((m: any) => {
+        if (m.role === 'assistant' && m.cost) {
+          historicalCost += m.cost;
+          historicalRuns += 1;
+          
+          // Approximate baseline multiplier based on model string
+          let multiplier = 5; // default fallback
+          const modelUsed = (m.model_used || '').toLowerCase();
+          if (modelUsed.includes('8b') || modelUsed.includes('small')) multiplier = 10;
+          else if (modelUsed.includes('70b') || modelUsed.includes('large')) multiplier = 3;
+          else if (modelUsed.includes('120b') || modelUsed.includes('o1') || modelUsed.includes('r1')) multiplier = 1;
+          
+          historicalBaselineCost += (m.cost * multiplier);
+        }
+      });
+      
+      const total_savings_pct = historicalBaselineCost > 0 ? ((historicalBaselineCost - historicalCost) / historicalBaselineCost) * 100 : 0;
+      
+      setMetrics((prev: any) => {
+        const base = prev || { total_runs: 0 };
+        return {
+          ...base,
+          baseline_cost: historicalBaselineCost,
+          routegen_cost: historicalCost,
+          baseline_joules: historicalBaselineCost * 8000,
+          routegen_joules: historicalCost * 8000,
+          total_savings_pct,
+          energy_savings_pct: total_savings_pct
+        };
+      });
+
+      if (messages.length > 0) {
+        fetchDocuments(sid);
+      }
     } catch (e) {
       console.error(e);
     }
@@ -303,9 +348,38 @@ const ChatApp = () => {
         setLogs(prev => [...data.logs.reverse(), ...prev].slice(0, 50));
       }
 
-      // Refresh recent sessions list and metrics
+      // Refresh recent sessions list
       fetchRecentSessions();
-      fetchMetrics();
+
+      // Live Observability Stats Update for CURRENT session
+      const cost = data.total_cost || 0;
+      const currentTier = pipelineTrace.find((l: any) => l.node_id === 'query_parsing')?.tier_selected || 'unknown';
+      let baselineMultiplier = 1;
+      if (currentTier === 'small') baselineMultiplier = 10;
+      else if (currentTier === 'large') baselineMultiplier = 3;
+      
+      const baselineCost = cost * baselineMultiplier;
+      
+      setMetrics((prev: any) => {
+        const p = prev || { baseline_cost: 0, routegen_cost: 0, total_runs: 0 };
+        const newRoutegenCost = (p.routegen_cost || 0) + cost;
+        const newBaselineCost = (p.baseline_cost || 0) + baselineCost;
+        const newTotalRuns = (p.total_runs || 0) + 1;
+        
+        const total_savings_pct = newBaselineCost > 0 ? ((newBaselineCost - newRoutegenCost) / newBaselineCost) * 100 : 0;
+        const energy_savings_pct = total_savings_pct; // Use cost savings as proxy for energy savings
+
+        return {
+          ...p,
+          baseline_cost: newBaselineCost,
+          routegen_cost: newRoutegenCost,
+          baseline_joules: newBaselineCost * 8000,
+          routegen_joules: newRoutegenCost * 8000,
+          total_runs: newTotalRuns,
+          total_savings_pct,
+          energy_savings_pct
+        };
+      });
     } catch (e: any) {
       // A user-triggered retry aborts the previous request — that's not an error.
       if (e?.name === 'AbortError') return;
