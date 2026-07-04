@@ -6,13 +6,13 @@ const CostPanel = ({ metrics }: { metrics: any }) => {
   if (!metrics) return <div className="p-6 bg-surface rounded-xl border border-surface/50 h-64 animate-pulse"></div>;
 
   const costData = [
-    { name: 'Baseline', value: metrics.baseline_cost, color: '#ef4444' },
-    { name: 'RouteGen AI', value: metrics.routegen_cost, color: '#10b981' }
+    { name: 'Baseline', value: metrics.baseline_cost || 0.0, color: '#ef4444' },
+    { name: 'RouteGen AI', value: metrics.routegen_cost || 0.0, color: '#10b981' }
   ];
 
   const energyData = [
-    { name: 'Baseline', value: metrics.baseline_joules, color: '#ef4444' },
-    { name: 'RouteGen AI', value: metrics.routegen_joules, color: '#10b981' }
+    { name: 'Baseline', value: metrics.baseline_joules || 0.0, color: '#ef4444' },
+    { name: 'RouteGen AI', value: metrics.routegen_joules || 0.0, color: '#10b981' }
   ];
 
   return (
@@ -30,7 +30,7 @@ const CostPanel = ({ metrics }: { metrics: any }) => {
         <div className="text-right">
           <div className="text-3xl font-bold text-success flex items-center gap-1 justify-end">
             <TrendingDown className="w-6 h-6" />
-            {metrics.total_savings_pct}%
+            {(metrics.total_savings_pct || 0.0).toFixed(0)}%
           </div>
           <div className="text-xs text-text-secondary uppercase tracking-wider mt-1">Total Savings</div>
         </div>
@@ -71,7 +71,7 @@ const CostPanel = ({ metrics }: { metrics: any }) => {
           <div className="text-right">
             <div className="text-xl font-bold text-success flex items-center gap-1 justify-end">
               <TrendingDown className="w-4 h-4" />
-              {metrics.energy_savings_pct.toFixed(0)}%
+              {(metrics.energy_savings_pct || 0.0).toFixed(0)}%
             </div>
           </div>
         </div>
@@ -96,7 +96,7 @@ const CostPanel = ({ metrics }: { metrics: any }) => {
         </div>
         
         <div className="mt-4 pt-3 border-t border-border/50 text-center text-xs text-text-secondary">
-          Total messages processed: <span className="font-bold text-white">{metrics.total_runs}</span>
+          Total messages processed: <span className="font-bold text-white">{metrics.total_runs || 0}</span>
         </div>
       </div>
     </div>
