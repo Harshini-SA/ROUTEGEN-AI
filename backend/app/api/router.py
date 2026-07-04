@@ -7,7 +7,8 @@ from pydantic import BaseModel
 from app.core.classifier import classifier
 from app.core.fallback import fallback_manager
 from app.pipeline.demo_pipeline import demo_pipeline
-from app.core.cache import semantic_cache
+from app.core.smart_cache import smart_cache
+from app.core.router import IntelligentRouter, classify_complexity
 from app.core.db import db_store
 from app.core.rag_store import rag_store
 from app.core.file_processor import extract_text
@@ -74,6 +75,37 @@ async def run_pipeline(request: PipelineRequest, user_id: str = Depends(get_curr
         # Auto generate title from first query
         title = request.query[:50] + ("..." if len(request.query) > 50 else "")
         db_store.update_session_title(sid, title)
+        
+    # Check cache first (only for standard mode, compare mode needs live run)
+    if not request.compare:
+        cached = smart_cache.find_similar(request.query)
+        if cached:
+            # CACHE HIT — return instantly
+            assistant_response = cached['response']
+            db_store.append_message(sid, "user", request.query)
+            db_store.append_message(sid, "assistant", assistant_response, cost=0.0, energy_joules=0.0, energy_gco2e=0.0)
+            
+            return {
+                "session_id": sid,
+                "report": assistant_response,
+                "total_cost": 0.0,
+                "total_joules": 0.0,
+                "total_gco2e": 0.0,
+                "cache_hit": True,
+                "cache_savings": cached['cost'],
+                "original_query": cached['query'],
+                "logs": [{
+                    "node_id": "smart_cache",
+                    "model_used": cached['model'],
+                    "tier_selected": cached['tier'],
+                    "complexity_score": 0.0,
+                    "latency_ms": 0.0,
+                    "cost_usd": 0.0,
+                    "cache_hit": True,
+                    "similarity": "0.92+",
+                    "classification_reason": f"⚡ Cache hit! Saved ${cached['cost']:.6f}"
+                }]
+            }
     
     # 2. Append the user's message to session history
     db_store.append_message(sid, "user", request.query)
@@ -174,6 +206,15 @@ Return ONLY valid JSON: {{"score_a": 8, "score_b": 7, "reason": "..."}}"""
         # 4. Append assistant response to session history
         assistant_response = final_state.get("final_report", "")
         db_store.append_message(sid, "assistant", assistant_response, cost=final_state.get("total_cost", 0.0), energy_joules=final_state.get("total_joules", 0.0), energy_gco2e=final_state.get("total_gco2e", 0.0))
+        
+        # Store in cache after successful run
+        smart_cache.store(
+            query=request.query,
+            response=assistant_response,
+            tier=final_state.get("routing_logs", [{}])[0].get("tier_selected", "unknown") if final_state.get("routing_logs") else "unknown",
+            model=final_state.get("routing_logs", [{}])[0].get("model_used", "unknown") if final_state.get("routing_logs") else "unknown",
+            cost=final_state.get("total_cost", 0.0)
+        )
         
         return {
             "session_id": sid,
@@ -421,12 +462,14 @@ async def get_metrics(user_id: str = Depends(get_current_user)):
 
 @router.get("/cache/stats", tags=["Cache"])
 async def get_cache_stats():
-    """Return semantic cache statistics (Mocked for demo)."""
-    return {
-        "hit_rate_pct": 25.0,
-        "queries_served_zero_cost": 12,
-        "total_savings_usd": 0.15
-    }
+    """Return semantic cache statistics."""
+    return smart_cache.get_stats()
+
+@router.delete("/cache/clear", tags=["Cache"])
+async def clear_cache():
+    """Clear the semantic cache."""
+    smart_cache.clear()
+    return {"status": "cleared"}
 
 # --- WebSocket for Live Logs ---
 class ConnectionManager:

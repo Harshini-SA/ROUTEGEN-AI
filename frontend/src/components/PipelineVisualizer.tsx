@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Clock, Loader2, CheckCircle2, ChevronRight, ChevronDown, Activity, GitBranch } from 'lucide-react';
+import { Clock, Loader2, CheckCircle2, ChevronRight, ChevronDown, Activity, GitBranch, Zap } from 'lucide-react';
 
 /**
  * Live 5-node pipeline progress visualizer.
@@ -24,6 +24,8 @@ export interface TraceEntry {
   classification_reason?: string;
   classification_confidence?: number;
   classification_method?: string; // "huggingface" | "keyword_fallback"
+  cache_hit?: boolean;
+  similarity?: string;
 }
 
 interface PipelineVisualizerProps {
@@ -32,6 +34,7 @@ interface PipelineVisualizerProps {
   orientation?: 'horizontal' | 'vertical'; // horizontal = chat, vertical = narrow compare columns
   title?: string;
   autoCollapse?: boolean;                  // collapse into a toggle once the animation finishes
+  defaultCollapsed?: boolean;              // instantly show collapsed (for historical chats)
 }
 
 const NODES: { id: string; label: string }[] = [
@@ -104,18 +107,19 @@ const PipelineVisualizer: React.FC<PipelineVisualizerProps> = ({
   orientation = 'horizontal',
   title = 'Pipeline Trace',
   autoCollapse = false,
+  defaultCollapsed = false,
 }) => {
   const traceByNode = new Map((trace || []).map((t) => [t.node_id, t]));
 
   // completedCount = how many nodes have finished; the node at that index is "active".
   const [completedCount, setCompletedCount] = useState(live ? 0 : 0);
   const [sweep, setSweep] = useState(0); // live-mode scanning pointer
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   // Staggered "each node completes" animation, driven from the (already-complete) trace.
   useEffect(() => {
-    if (live || !trace || trace.length === 0) return;
+    if (live || !trace || trace.length === 0 || defaultCollapsed) return;
     timers.current.forEach(clearTimeout);
     timers.current = [];
     setCompletedCount(0);
@@ -162,6 +166,31 @@ const PipelineVisualizer: React.FC<PipelineVisualizerProps> = ({
     if (st === 'active') return <Loader2 className="w-4 h-4 animate-spin" />;
     return <Clock className="w-4 h-4" />;
   };
+
+  // ---- Cache Hit UI ----
+  if (trace && trace.length > 0 && trace[0].cache_hit) {
+    const hit = trace[0];
+    const savedStr = hit.classification_reason?.match(/\$([0-9.]+)/)?.[1] || '0.00';
+    return (
+      <div className="rounded-xl border border-green-500/30 bg-green-900/10 p-4 w-full flex items-center justify-between shadow-[0_0_15px_rgba(16,185,129,0.1)]">
+        <div className="flex items-center space-x-4">
+          <div className="w-10 h-10 rounded-full bg-green-500/20 flex items-center justify-center border border-green-500/30 shadow-[0_0_10px_rgba(16,185,129,0.2)]">
+            <Zap className="w-5 h-5 text-green-400 drop-shadow-[0_0_5px_rgba(16,185,129,0.5)]" />
+          </div>
+          <div>
+            <h3 className="text-[13px] font-bold text-green-400 tracking-wide">
+              ⚡ SMART CACHE HIT
+            </h3>
+            <p className="text-[11px] text-green-400/70 mt-1 uppercase tracking-wider">Matched previous query · Response time: {'<50ms'}</p>
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="text-xs font-mono text-text-secondary">Cost: <span className="text-white">$0.00</span></div>
+          <div className="text-xs font-mono text-green-400 mt-1">Saved: ${savedStr}</div>
+        </div>
+      </div>
+    );
+  }
 
   // ---- Collapsed pill ----
   if (collapsed) {

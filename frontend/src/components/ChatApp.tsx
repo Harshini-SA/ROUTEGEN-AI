@@ -53,6 +53,9 @@ const ChatApp = () => {
   const [uploadedFiles, setUploadedFiles] = useState<{ filename: string; chunks: number }[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  
+  // Cache stats state
+  const [cacheStats, setCacheStats] = useState<any>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -146,8 +149,8 @@ const ChatApp = () => {
   // Fetch metrics + recent sessions on mount
   useEffect(() => {
     fetchMetrics();
-
     fetchRecentSessions();
+    fetchCacheStats();
 
     const ws = new WebSocket('ws://127.0.0.1:8000/ws/live');
     ws.onmessage = (event) => {
@@ -163,6 +166,15 @@ const ChatApp = () => {
     })
       .then(res => res.json())
       .then(data => setRecentSessions(data))
+      .catch(console.error);
+  };
+
+  const fetchCacheStats = () => {
+    fetch(`${API_BASE}/cache/stats`, {
+      headers: { 'Authorization': `Bearer ${session?.access_token}` }
+    })
+      .then(res => res.json())
+      .then(data => setCacheStats(data))
       .catch(console.error);
   };
 
@@ -193,7 +205,22 @@ const ChatApp = () => {
       if (data.error) return;
 
       setSessionId(sid);
-      const messages = data.messages || [];
+      const messagesRaw = data.messages || [];
+      const messages = messagesRaw.map((m: any) => {
+        if (m.role === 'assistant' && m.cost !== undefined) {
+          // Reconstruct historical trace to render the collapsed pipeline pill
+          m.trace = [
+            { node_id: 'query_parsing', tier_selected: m.tier || 'unknown' },
+            { node_id: 'web_search_summarisation' },
+            { node_id: 'evidence_analysis' },
+            { node_id: 'contradiction_detection' },
+            { node_id: 'final_formatting', model_used: m.model_used || 'unknown', cost_usd: m.cost || 0 }
+          ];
+          m.isHistorical = true;
+        }
+        return m;
+      });
+      
       setMessages(messages);
       setLogs([]);
       setUploadedFiles([]);
@@ -380,6 +407,9 @@ const ChatApp = () => {
           energy_savings_pct
         };
       });
+
+      // Refresh cache stats
+      fetchCacheStats();
     } catch (e: any) {
       // A user-triggered retry aborts the previous request — that's not an error.
       if (e?.name === 'AbortError') return;
@@ -673,9 +703,15 @@ const ChatApp = () => {
                           <Compass className="w-5 h-5 text-primary" />
                         </div>
                         <div className="flex-1 min-w-0 space-y-3">
+                          {msg.trace && msg.trace.length > 0 && msg.trace[0].cache_hit && (
+                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-green-500/10 border border-green-500/20 shadow-[0_0_10px_rgba(16,185,129,0.1)]">
+                              <Zap className="w-3.5 h-3.5 text-green-400" />
+                              <span className="text-[10px] font-bold text-green-400 uppercase tracking-wider">Smart Cached</span>
+                            </div>
+                          )}
                           {/* Pipeline trace: appears between the user's message and this response */}
                           {msg.trace && msg.trace.length > 0 && (
-                            <PipelineVisualizer trace={msg.trace} autoCollapse />
+                            <PipelineVisualizer trace={msg.trace} autoCollapse={!msg.isHistorical} defaultCollapsed={msg.isHistorical} />
                           )}
                           <div className="pt-1 text-text-primary prose prose-invert prose-sm sm:prose-base prose-p:leading-relaxed prose-pre:bg-surface prose-pre:border prose-pre:border-border">
                             <ReactMarkdown
@@ -811,6 +847,27 @@ const ChatApp = () => {
           <CostPanel metrics={metrics} />
 
           <DocumentsPanel files={uploadedFiles} onClear={handleClearDocuments} />
+
+          <div className="mt-8">
+            <h3 className="text-xs font-semibold uppercase text-text-secondary mb-3 flex items-center space-x-2">
+              <Zap className="w-4 h-4 text-green-400" />
+              <span>Smart Context Cache</span>
+            </h3>
+            <div className="bg-surface rounded-xl border border-border p-4 shadow-sm">
+              <div className="flex justify-between items-center mb-4">
+                <span className="text-sm text-text-secondary">Cache Hits</span>
+                <span className="text-lg font-bold text-green-400">{cacheStats?.total_hits || 0}</span>
+              </div>
+              <div className="flex justify-between items-center mb-4">
+                <span className="text-sm text-text-secondary">Hit Rate</span>
+                <span className="text-lg font-bold text-white">{((cacheStats?.hit_rate || 0) * 100).toFixed(1)}%</span>
+              </div>
+              <div className="flex justify-between items-center pt-3 border-t border-border/50">
+                <span className="text-sm text-text-secondary">Total Cost Saved</span>
+                <span className="text-lg font-bold text-success">${(cacheStats?.total_cost_saved || 0).toFixed(4)}</span>
+              </div>
+            </div>
+          </div>
 
           <div className="mt-8">
             <h3 className="text-xs font-semibold uppercase text-text-secondary mb-3 flex items-center space-x-2">
