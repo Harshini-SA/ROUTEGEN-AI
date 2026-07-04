@@ -442,29 +442,28 @@ const ChatApp = () => {
           </button>
         </div>
 
-        {/* Recent Sessions */}
-        <div className="flex-1 overflow-y-auto px-3 py-4 space-y-1 custom-scrollbar">
-          {recentSessions.length > 0 && (
-            <>
-              <div className="pb-2 px-3">
-                <span className="text-xs font-semibold text-text-secondary uppercase tracking-wider">Recent Chats</span>
-              </div>
-              {recentSessions.map((s) => (
-                <button
-                  key={s.session_id}
-                  onClick={() => handleLoadSession(s.session_id)}
-                  className={`w-full text-left px-3 py-2.5 rounded-lg text-sm truncate transition-colors flex items-center space-x-2 ${
-                    sessionId === s.session_id 
-                      ? 'bg-surface-hover text-text-primary font-medium' 
-                      : 'hover:bg-surface-hover text-text-secondary hover:text-text-primary'
-                  }`}
-                >
-                  <MessageSquare className="w-3.5 h-3.5 shrink-0 opacity-50" />
-                  <span className="truncate">{s.title}</span>
-                </button>
-              ))}
-            </>
-          )}
+        {/* Option Buttons (Compare, Observability) */}
+        <div className="p-3 border-b border-border space-y-1">
+          <button 
+            onClick={() => setCompareMode(!compareMode)}
+            className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg transition-colors ${compareMode ? 'bg-secondary/10 text-secondary border border-secondary/30' : 'hover:bg-surface-hover text-text-secondary hover:text-text-primary'}`}
+          >
+            <div className="flex items-center space-x-3">
+              <Scale className="w-4 h-4" />
+              <span className="text-sm font-medium">Compare Mode</span>
+            </div>
+            {compareMode && <span className="w-2 h-2 rounded-full bg-secondary shadow-[0_0_8px_rgba(168,85,247,0.8)]"></span>}
+          </button>
+          <button 
+            onClick={() => setShowInsights(!showInsights)}
+            className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg transition-colors ${showInsights ? 'bg-primary/10 text-primary' : 'hover:bg-surface-hover text-text-secondary hover:text-text-primary'}`}
+          >
+            <div className="flex items-center space-x-3">
+              <Activity className="w-4 h-4" />
+              <span className="text-sm">Observability</span>
+            </div>
+            <ChevronRight className={`w-4 h-4 transition-transform ${showInsights ? 'rotate-90' : ''}`} />
+          </button>
         </div>
 
         {/* Live Prompt Metrics Monitor */}
@@ -527,27 +526,29 @@ const ChatApp = () => {
           </div>
         )}
 
-        <div className="p-3 border-t border-border space-y-1">
-          <button 
-            onClick={() => setCompareMode(!compareMode)}
-            className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg transition-colors ${compareMode ? 'bg-secondary/10 text-secondary border border-secondary/30' : 'hover:bg-surface-hover text-text-secondary hover:text-text-primary'}`}
-          >
-            <div className="flex items-center space-x-3">
-              <Scale className="w-4 h-4" />
-              <span className="text-sm font-medium">Compare Mode</span>
-            </div>
-            {compareMode && <span className="w-2 h-2 rounded-full bg-secondary shadow-[0_0_8px_rgba(168,85,247,0.8)]"></span>}
-          </button>
-          <button 
-            onClick={() => setShowInsights(!showInsights)}
-            className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg transition-colors ${showInsights ? 'bg-primary/10 text-primary' : 'hover:bg-surface-hover text-text-secondary hover:text-text-primary'}`}
-          >
-            <div className="flex items-center space-x-3">
-              <Activity className="w-4 h-4" />
-              <span className="text-sm">Observability</span>
-            </div>
-            <ChevronRight className={`w-4 h-4 transition-transform ${showInsights ? 'rotate-90' : ''}`} />
-          </button>
+        {/* Recent Sessions */}
+        <div className="flex-1 overflow-y-auto px-3 py-4 space-y-1 custom-scrollbar">
+          {recentSessions.length > 0 && (
+            <>
+              <div className="pb-2 px-3">
+                <span className="text-xs font-semibold text-text-secondary uppercase tracking-wider">Recent Chats</span>
+              </div>
+              {recentSessions.map((s) => (
+                <button
+                  key={s.session_id}
+                  onClick={() => handleLoadSession(s.session_id)}
+                  className={`w-full text-left px-3 py-2.5 rounded-lg text-sm truncate transition-colors flex items-center space-x-2 ${
+                    sessionId === s.session_id 
+                      ? 'bg-surface-hover text-text-primary font-medium' 
+                      : 'hover:bg-surface-hover text-text-secondary hover:text-text-primary'
+                  }`}
+                >
+                  <MessageSquare className="w-3.5 h-3.5 shrink-0 opacity-50" />
+                  <span className="truncate">{s.title}</span>
+                </button>
+              ))}
+            </>
+          )}
         </div>
 
         {/* User Profile / Logout */}
