@@ -66,13 +66,15 @@ class Settings(BaseSettings):
     # Maps tier names to lists of model identifiers (LiteLLM format)
     small_tier_models: list[str] = [
         "groq/llama-3.1-8b-instant",                    # Free, extremely fast
+        "groq/llama-3.3-70b-versatile",                 # Intra-tier fallback if primary is rate-limited/down
     ]
     large_tier_models: list[str] = [
         "gemini/gemini-3.5-flash",                      # Fast, strong capability
+        "groq/llama-3.3-70b-versatile",                 # Intra-tier fallback if Gemini is rate-limited/down
     ]
     reasoning_tier_models: list[str] = [
         "cerebras/gpt-oss-120b",                        # Cerebras GPT-OSS 120B
-        "groq/llama-3.3-70b-versatile",                 # Fallback backup
+        "groq/llama-3.3-70b-versatile",                 # Intra-tier fallback if primary is rate-limited/down
     ]
 
     # ── Tier Score Boundaries ───────────────────────────────────────────

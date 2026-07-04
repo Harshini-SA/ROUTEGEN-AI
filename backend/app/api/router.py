@@ -174,75 +174,142 @@ Return ONLY valid JSON: {{"score_a": 8, "score_b": 7, "reason": "..."}}"""
 
 class CompareRequest(BaseModel):
     prompt: str
+    session_id: Optional[str] = None
+
+# Forced single-model baseline for the quality-vs-cost dashboard: "what if we always
+# used the premium model" regardless of the prompt's actual complexity.
+BASELINE_MODEL = "cerebras/gpt-oss-120b"
+JUDGE_MODEL = "groq/llama-3.1-8b-instant"
+
+
+def _empty_scores() -> Dict[str, float]:
+    return {"correctness": 0, "completeness": 0, "clarity": 0, "overall": 0}
+
 
 @router.post("/compare", tags=["Compare"])
-async def compare_prompt(request: CompareRequest):
-    """Run a prompt through both the routed pipeline and the baseline pipeline side-by-side."""
+async def compare_prompt(request: CompareRequest, user_id: str = Depends(get_current_user)):
+    """
+    Quality-vs-cost tradeoff dashboard (hackathon requirement): run the same prompt through
+    the routed pipeline (Run A) and a forced single-premium-model baseline (Run B), score both
+    with an LLM judge, and compute cost savings / accuracy delta.
+    """
     import asyncio
+    import time
     import litellm
     import json
-    
-    sid = "test_eval_" + str(uuid.uuid4())[:8]
-    
-    initial_state = {
-        "session_id": sid,
-        "query": request.prompt,
-        "conversation_history": [],
-        "context": "",
-        "analysis": "",
-        "contradictions": "",
-        "final_report": "",
-        "nodes_executed": [],
-        "total_cost": 0.0,
-        "routing_logs": []
-    }
-    
-    baseline_state = {
-        **initial_state,
-        "session_id": sid + "_base",
-        "baseline_model": True
-    }
-    
-    # Run both pipelines
-    final_state, final_base_state = await asyncio.gather(
-        demo_pipeline.ainvoke(initial_state),
-        demo_pipeline.ainvoke(baseline_state)
-    )
-    
-    # Judge Evaluation
-    judge_prompt = f"""You are an expert evaluator. 
-Query: {request.prompt}
-Output A (Routed AI): {final_state.get('final_report')}
-Output B (Baseline AI): {final_base_state.get('final_report')}
-Score Output A and Output B from 1-10 on correctness, completeness, and clarity. Then give an overall score from 1-10.
-Return ONLY valid JSON with keys: score_a, score_b, reason.
-Example: {{"score_a": 8, "score_b": 7, "reason": "..."}}"""
 
+    sid = request.session_id or ("compare_" + str(uuid.uuid4())[:8])
+
+    def _fresh_state(session_id: str, baseline_model: Optional[str] = None) -> Dict[str, Any]:
+        state = {
+            "session_id": session_id,
+            "query": request.prompt,
+            "conversation_history": [],
+            "context": "",
+            "analysis": "",
+            "contradictions": "",
+            "final_report": "",
+            "nodes_executed": [],
+            "total_cost": 0.0,
+            "routing_logs": [],
+            "rag_used": False,
+            "rag_chunk_count": 0,
+            "rag_sources": []
+        }
+        if baseline_model:
+            state["baseline_model"] = baseline_model
+        return state
+
+    async def _timed_run(state: Dict[str, Any]):
+        start = time.time()
+        final = await demo_pipeline.ainvoke(state)
+        return final, (time.time() - start) * 1000
+
+    # Run A (routed) and Run B (forced baseline) concurrently, each individually timed.
+    (routed_state, routed_latency_ms), (baseline_state, baseline_latency_ms) = await asyncio.gather(
+        _timed_run(_fresh_state(sid)),
+        _timed_run(_fresh_state(sid + "_baseline", baseline_model=BASELINE_MODEL))
+    )
+
+    routed_response = routed_state.get("final_report", "")
+    baseline_response = baseline_state.get("final_report", "")
+
+    # Every node in the routed run is locked to the same tier/model (classification runs
+    # once, at query_parsing — see demo_pipeline.py), so the last log entry is representative.
+    routed_logs = routed_state.get("routing_logs", [])
+    routed_last_log = routed_logs[-1] if routed_logs else {}
+    routed_model = routed_last_log.get("model_used", "unknown")
+    routed_tier = routed_last_log.get("tier_selected", "unknown")
+    routed_cost = routed_state.get("total_cost", 0.0)
+    baseline_cost = baseline_state.get("total_cost", 0.0)
+
+    # --- LLM-as-judge scoring ---
+    judge_prompt = f"""You are evaluating two AI responses to the same question.
+Question: {request.prompt}
+Response A: {routed_response}
+Response B: {baseline_response}
+
+Score each response on these criteria (1-10 each):
+- correctness: is the information accurate?
+- completeness: does it fully answer the question?
+- clarity: is it well written and easy to understand?
+
+Return ONLY valid JSON, no extra text:
+{{"routed": {{"correctness": X, "completeness": X, "clarity": X, "overall": X}}, "baseline": {{"correctness": X, "completeness": X, "clarity": X, "overall": X}}}}"""
+
+    accuracy_scoring_available = True
     try:
         judge_res = await litellm.acompletion(
-            model="groq/llama-3.3-70b-versatile",
+            model=JUDGE_MODEL,
             messages=[{"role": "user", "content": judge_prompt}],
             response_format={"type": "json_object"}
         )
-        judge_score = json.loads(judge_res.choices[0].message.content)
-    except Exception as e:
-        judge_score = {"score_a": 0, "score_b": 0, "reason": f"Failed to judge: {str(e)}"}
-        
-    routed_cost = final_state.get("total_cost", 0.0)
-    baseline_cost = final_base_state.get("total_cost", 0.0)
-    
-    cost_savings_usd = max(0.0, baseline_cost - routed_cost)
+        judge_json = json.loads(judge_res.choices[0].message.content)
+        routed_scores = judge_json["routed"]
+        baseline_scores = judge_json["baseline"]
+    except Exception:
+        accuracy_scoring_available = False
+        routed_scores = _empty_scores()
+        baseline_scores = _empty_scores()
+
+    # --- Metrics (S = C_baseline - Σ(C_node_i); ΔA computed as routed - baseline so
+    # positive always means "routed is better", per the API contract below) ---
+    cost_savings_usd = baseline_cost - routed_cost
     cost_savings_pct = (cost_savings_usd / baseline_cost * 100) if baseline_cost > 0 else 0.0
-    
+    accuracy_delta = routed_scores.get("overall", 0) - baseline_scores.get("overall", 0)
+    quality_maintained = accuracy_delta >= -1.0
+
+    verdict = (
+        f"Saved {cost_savings_pct:.0f}% cost with {accuracy_delta:+.1f} quality delta"
+        if accuracy_scoring_available
+        else f"Saved {cost_savings_pct:.0f}% cost (quality scoring unavailable)"
+    )
+
     return {
         "prompt": request.prompt,
-        "routed_report": final_state.get("final_report"),
-        "routed_cost": routed_cost,
-        "baseline_report": final_base_state.get("final_report"),
-        "baseline_cost": baseline_cost,
-        "cost_savings_usd": cost_savings_usd,
-        "cost_savings_pct": cost_savings_pct,
-        "judge_score": judge_score
+        "routed": {
+            "model": routed_model,
+            "tier": routed_tier,
+            "cost": routed_cost,
+            "latency_ms": routed_latency_ms,
+            "response": routed_response,
+            "scores": routed_scores
+        },
+        "baseline": {
+            "model": BASELINE_MODEL,
+            "cost": baseline_cost,
+            "latency_ms": baseline_latency_ms,
+            "response": baseline_response,
+            "scores": baseline_scores
+        },
+        "savings": {
+            "cost_savings_usd": cost_savings_usd,
+            "cost_savings_pct": cost_savings_pct,
+            "accuracy_delta": accuracy_delta,
+            "quality_maintained": quality_maintained,
+            "accuracy_scoring_available": accuracy_scoring_available
+        },
+        "verdict": verdict
     }
 
 

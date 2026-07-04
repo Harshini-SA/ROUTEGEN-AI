@@ -1,6 +1,7 @@
 import time
 import logging
 from typing import Dict, Any, Optional, List
+import litellm
 from litellm import acompletion
 from app.config import settings
 from app.core.classifier import ComplexityScore
@@ -76,18 +77,17 @@ class DynamicRouter:
                 f"Tokens(in={usage.prompt_tokens if usage else '?'}, out={usage.completion_tokens if usage else '?'})"
             )
             
-            # Tier-based cost estimate (hardcoded for demo stability)
-            estimated_cost = 0.0
-            if target_tier == "small":
-                estimated_cost = 0.0003
-            elif target_tier == "large":
-                estimated_cost = 0.015
-            else:
-                if "cerebras" in model_id.lower() and usage:
-                    estimated_cost = (usage.prompt_tokens * 0.39 / 1000000) + (usage.completion_tokens * 0.75 / 1000000)
-                else:
-                    estimated_cost = 0.04
-                    
+            # Real per-token cost from litellm's model pricing map (covers every model this
+            # app actually dispatches to — Groq, Gemini, Cerebras). Falls back to a rough
+            # flat-rate-per-tier estimate only if litellm has no pricing data for a model
+            # (e.g. a brand-new model id not yet in its cost map).
+            try:
+                estimated_cost = litellm.completion_cost(completion_response=response) or 0.0
+            except Exception as cost_err:
+                logger.warning(f"completion_cost failed for {model_id} ({cost_err}); using flat-rate fallback.")
+                fallback_rates = {"small": 0.0003, "large": 0.015, "reasoning": 0.04}
+                estimated_cost = fallback_rates.get(target_tier, 0.0)
+
             # Requested Observability Log Format
             logger.info(f'{{ "router_decision": "{target_tier}", "reasoning_score": {complexity.score}, "exact_cost_usd": {estimated_cost:.6f} }}')
                 
@@ -118,7 +118,8 @@ class DynamicRouter:
                 "input_tokens": 0,
                 "output_tokens": 0,
                 "cost_usd": 0.0,
-                "error": str(e)
+                "error": str(e),
+                "error_type": type(e).__name__
             }
 
 router = DynamicRouter()

@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import CostPanel from './panels/CostPanel';
 import RoutingLogTable from './panels/RoutingLogTable';
-import ComparePanel from './panels/ComparePanel';
 import DocumentsPanel from './panels/DocumentsPanel';
+import CompareDashboard from './CompareDashboard';
 import { Send, Sparkles, Activity, Clock, Compass, Zap, Settings, ChevronRight, Menu, Plus, Scale, MessageSquare, Search, LogOut, User, Paperclip, X, Loader2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { useOutletContext } from 'react-router-dom';
@@ -14,10 +14,7 @@ interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
-  baseline_content?: string;
-  judge_score?: any;
   cost?: number;
-  baseline_cost?: number;
 }
 
 interface SessionSummary {
@@ -52,8 +49,6 @@ const ChatApp = () => {
   useEffect(() => {
     scrollToBottom();
   }, [messages, isRunning]);
-
-  const latestComparisonMessage = [...messages].reverse().find(m => m.baseline_cost !== undefined);
 
   // Fetch metrics + recent sessions on mount
   useEffect(() => {
@@ -187,20 +182,16 @@ const ChatApp = () => {
         },
         body: JSON.stringify({
           query: queryToRun,
-          compare: compareMode,
           session_id: sessionId  // pre-generated client-side so uploads can attach before the first message
         })
       });
       const data = await res.json();
 
       setMessages(prev => [...prev, {
-        id: Date.now().toString(), 
-        role: 'assistant', 
+        id: Date.now().toString(),
+        role: 'assistant',
         content: data.final_report || "No response generated.",
-        baseline_content: data.baseline_report,
-        judge_score: data.judge_score,
-        cost: data.total_cost,
-        baseline_cost: data.baseline_cost
+        cost: data.total_cost
       }]);
 
       if (data.logs) {
@@ -320,6 +311,10 @@ const ChatApp = () => {
 
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col h-full relative w-full overflow-hidden">
+        {compareMode ? (
+          <CompareDashboard session={session} sessionId={sessionId} />
+        ) : (
+          <>
         <input
           ref={fileInputRef}
           type="file"
@@ -368,7 +363,7 @@ const ChatApp = () => {
                       handleSend();
                     }
                   }}
-                  placeholder={compareMode ? "Compare Mode Active: Ask anything to run side-by-side benchmark..." : "Ask anything..."}
+                  placeholder="Ask anything..."
                   disabled={isRunning}
                   className="w-full bg-transparent min-h-[120px] p-4 text-[16px] text-text-primary placeholder:text-text-secondary/50 focus:outline-none resize-none disabled:opacity-50"
                 />
@@ -410,82 +405,13 @@ const ChatApp = () => {
                         <p className="text-text-primary leading-relaxed whitespace-pre-wrap">{msg.content}</p>
                       </div>
                     ) : (
-                      <div className="flex flex-col w-full space-y-4">
-                        {!msg.baseline_content ? (
-                          <div className="flex items-start space-x-4 max-w-[100%]">
-                            <div className="w-8 h-8 rounded-lg bg-surface flex flex-shrink-0 items-center justify-center border border-primary/30 shadow-[0_0_10px_rgba(6,182,212,0.2)]">
-                              <Compass className="w-5 h-5 text-primary" />
-                            </div>
-                            <div className="pt-1 text-text-primary prose prose-invert prose-sm sm:prose-base prose-p:leading-relaxed prose-pre:bg-surface prose-pre:border prose-pre:border-border">
-                              <ReactMarkdown>{msg.content}</ReactMarkdown>
-                            </div>
-                          </div>
-                        ) : (
-                          // Delta Panel (Compare Mode)
-                          <div className="w-full space-y-4">
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full">
-                              {/* Routed Side */}
-                              <div className="bg-surface border border-primary/50 rounded-2xl p-4 relative shadow-[0_0_15px_rgba(6,182,212,0.1)] flex flex-col">
-                                <div className="absolute -top-3 left-4 bg-primary text-background text-xs font-bold px-3 py-1 rounded-full flex items-center space-x-1">
-                                  <Compass className="w-3 h-3" />
-                                  <span>Intelligent Routed AI</span>
-                                </div>
-                                <div className="prose prose-invert prose-sm flex-1 mt-2 mb-4 overflow-x-auto">
-                                  <ReactMarkdown>{msg.content}</ReactMarkdown>
-                                </div>
-                                <div className="pt-3 border-t border-border flex justify-between items-center bg-background/50 -mx-4 -mb-4 p-4 rounded-b-2xl">
-                                  <div className="flex flex-col">
-                                    <span className="text-xs text-text-secondary uppercase tracking-wider">Cost</span>
-                                    <span className="text-success text-sm font-bold">${msg.cost?.toFixed(5)}</span>
-                                  </div>
-                                  <div className="flex flex-col items-end">
-                                    <span className="text-xs text-text-secondary uppercase tracking-wider">Quality Score</span>
-                                    <span className="text-primary text-lg font-bold">{msg.judge_score?.score_a}/10</span>
-                                  </div>
-                                </div>
-                              </div>
-                              
-                              {/* Baseline Side */}
-                              <div className="bg-surface border border-border rounded-2xl p-4 relative flex flex-col">
-                                <div className="absolute -top-3 left-4 bg-background border border-border text-text-secondary text-xs font-bold px-3 py-1 rounded-full">
-                                  Baseline (Gemini 1.5 Pro)
-                                </div>
-                                <div className="prose prose-invert prose-sm flex-1 mt-2 mb-4 overflow-x-auto opacity-80">
-                                  <ReactMarkdown>{msg.baseline_content}</ReactMarkdown>
-                                </div>
-                                <div className="pt-3 border-t border-border flex justify-between items-center bg-background/50 -mx-4 -mb-4 p-4 rounded-b-2xl">
-                                  <div className="flex flex-col">
-                                    <span className="text-xs text-text-secondary uppercase tracking-wider">Cost</span>
-                                    <span className="text-danger text-sm font-bold">${msg.baseline_cost?.toFixed(5)}</span>
-                                  </div>
-                                  <div className="flex flex-col items-end">
-                                    <span className="text-xs text-text-secondary uppercase tracking-wider">Quality Score</span>
-                                    <span className="text-text-primary text-lg font-bold">{msg.judge_score?.score_b}/10</span>
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                            
-                            {/* Summary Banner */}
-                            {(msg.baseline_cost && msg.cost) ? (
-                              <div className="w-full bg-surface-hover border border-border rounded-xl p-4 flex flex-col md:flex-row items-center justify-between shadow-sm">
-                                <div className="flex items-start space-x-3 mb-2 md:mb-0">
-                                  <Scale className="w-5 h-5 text-secondary mt-0.5 shrink-0" />
-                                  <div className="flex flex-col text-sm">
-                                    <span className="text-text-primary font-medium">LLM-as-a-Judge Evaluation</span>
-                                    <span className="text-text-secondary mt-1">{msg.judge_score?.reason || "Evaluation completed."}</span>
-                                  </div>
-                                </div>
-                                <div className="flex flex-col items-center justify-center shrink-0 ml-4 px-4 py-2 bg-success/10 rounded-lg border border-success/20">
-                                  <span className="text-xs text-success font-semibold uppercase tracking-wide">Saved</span>
-                                  <span className="text-success text-xl font-black">
-                                    {(((msg.baseline_cost - msg.cost) / msg.baseline_cost) * 100).toFixed(0)}%
-                                  </span>
-                                </div>
-                              </div>
-                            ) : null}
-                          </div>
-                        )}
+                      <div className="flex items-start space-x-4 max-w-[100%]">
+                        <div className="w-8 h-8 rounded-lg bg-surface flex flex-shrink-0 items-center justify-center border border-primary/30 shadow-[0_0_10px_rgba(6,182,212,0.2)]">
+                          <Compass className="w-5 h-5 text-primary" />
+                        </div>
+                        <div className="pt-1 text-text-primary prose prose-invert prose-sm sm:prose-base prose-p:leading-relaxed prose-pre:bg-surface prose-pre:border prose-pre:border-border">
+                          <ReactMarkdown>{msg.content}</ReactMarkdown>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -497,7 +423,7 @@ const ChatApp = () => {
                       <Sparkles className="w-4 h-4 text-primary animate-pulse" />
                     </div>
                     <div className="pt-1 text-text-secondary text-sm flex flex-col space-y-1">
-                      <span>{compareMode ? "Running side-by-side benchmark..." : "Routing through pipeline..."}</span>
+                      <span>Routing through pipeline...</span>
                     </div>
                   </div>
                 )}
@@ -537,7 +463,7 @@ const ChatApp = () => {
                         handleSend();
                       }
                     }}
-                    placeholder={compareMode ? "Compare Mode Active: Benchmark a query side-by-side..." : "Ask anything..."}
+                    placeholder="Ask anything..."
                     disabled={isRunning}
                     className="w-full bg-transparent max-h-48 min-h-[44px] py-2.5 text-[15px] text-text-primary placeholder:text-text-secondary focus:outline-none resize-none disabled:opacity-50 custom-scrollbar"
                     rows={1}
@@ -555,6 +481,8 @@ const ChatApp = () => {
             </div>
           </>
         )}
+          </>
+        )}
       </div>
 
       {/* Right: Observability Dashboard */}
@@ -570,13 +498,6 @@ const ChatApp = () => {
         </div>
         
         <div className="flex-1 overflow-y-auto p-4 space-y-6 custom-scrollbar">
-          {compareMode && (
-            <ComparePanel 
-              costRouted={latestComparisonMessage?.cost} 
-              costBaseline={latestComparisonMessage?.baseline_cost} 
-              judgeScore={latestComparisonMessage?.judge_score} 
-            />
-          )}
           <CostPanel metrics={metrics} />
 
           <DocumentsPanel files={uploadedFiles} onClear={handleClearDocuments} />

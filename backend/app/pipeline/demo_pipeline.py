@@ -1,8 +1,8 @@
 import uuid
 import time
-from typing import TypedDict, Dict, Any, List
+from typing import TypedDict, Dict, Any, List, Optional
 from langgraph.graph import StateGraph, END
-from app.core.classifier import classifier
+from app.core.classifier import classifier, ComplexityScore
 from app.core.cache import semantic_cache
 from app.core.fallback import fallback_manager
 from app.core.router import SYSTEM_PROMPT
@@ -34,6 +34,7 @@ class PipelineState(TypedDict):
     rag_used: bool
     rag_chunk_count: int
     rag_sources: List[str]
+    locked_complexity: Optional[ComplexityScore]  # Tier decision made once at query_parsing, reused by every node
 
 
 async def base_node(state: PipelineState, node_name: str, prompt: str, assertions: List[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -90,13 +91,21 @@ async def base_node(state: PipelineState, node_name: str, prompt: str, assertion
 
     # --- Normal Routed Path ---
 
-    # 1. Classification — use context-aware scoring
-    complexity = classifier.score_prompt_in_context(prompt, conversation_history)
+    # 1. Classification — decided ONCE per pipeline run (at query_parsing) and reused by every
+    # subsequent node. Nodes must NOT reclassify their own internally-generated meta-prompt text
+    # (e.g. "Analyze this evidence deeply...") — that text's wording/length has nothing to do with
+    # the original user query's actual complexity, and re-scoring it causes the tier to drift
+    # (usually upward) as the pipeline progresses, regardless of how simple the user's question was.
+    locked_complexity = state.get("locked_complexity")
+    if locked_complexity is not None:
+        complexity = locked_complexity
+    else:
+        complexity = classifier.score_prompt_in_context(state["query"], conversation_history)
 
-    # 1b. RAG queries require more synthesis — bump complexity so they land on a more capable tier
-    if state.get("rag_used"):
-        complexity.score = min(10.0, complexity.score + 1)
-        complexity.tier = classifier.tier_for_score(complexity.score)
+        # RAG queries require more synthesis — bump complexity so they land on a more capable tier
+        if state.get("rag_used"):
+            complexity.score = min(10.0, complexity.score + 1)
+            complexity.tier = classifier.tier_for_score(complexity.score)
 
     # 2. Cache Check (Only for the first node/query parsing usually, or independent full prompts)
     cache_hit = False
@@ -131,6 +140,10 @@ async def base_node(state: PipelineState, node_name: str, prompt: str, assertion
         "latency_ms": latency,
         "cost_usd": 0.0 if cache_hit else result.get("cost_usd", 0.0),
         "fallback_triggered": False if cache_hit else result.get("fallback_triggered", False),
+        "tier_escalated": False if cache_hit else result.get("tier_escalated", False),
+        "primary_model": None if cache_hit else result.get("primary_model"),
+        "fallback_model": None if cache_hit else result.get("fallback_model"),
+        "fallback_reason": None if cache_hit else result.get("fallback_reason"),
         "cache_hit": cache_hit,
         "rag_used": state.get("rag_used", False),
         "rag_chunk_count": state.get("rag_chunk_count", 0),
@@ -140,7 +153,8 @@ async def base_node(state: PipelineState, node_name: str, prompt: str, assertion
     return {
         "content": response_content,
         "log_entry": log_entry,
-        "cost": log_entry["cost_usd"]
+        "cost": log_entry["cost_usd"],
+        "complexity": complexity
     }
 
 
@@ -151,7 +165,10 @@ async def node_query_parsing(state: PipelineState):
     return {
         "nodes_executed": state["nodes_executed"] + ["query_parsing"],
         "routing_logs": state["routing_logs"] + [res["log_entry"]],
-        "total_cost": state["total_cost"] + res["cost"]
+        "total_cost": state["total_cost"] + res["cost"],
+        # Absent on baseline runs (base_node's baseline branch skips classification entirely) — fine,
+        # since baseline nodes never consult locked_complexity for routing either.
+        "locked_complexity": res.get("complexity")
     }
 
 
@@ -182,7 +199,11 @@ async def node_evidence_analysis(state: PipelineState):
 async def node_contradiction_detection(state: PipelineState):
     history_preamble = _build_context_preamble(state.get("conversation_history", []))
     prompt = f"{history_preamble}Critically evaluate the analysis for contradictions. If any found, explain them. Analysis: {state.get('analysis', '')}"
-    res = await base_node(state, "contradiction_detection", prompt, [{"type": "no_contradiction"}])
+    # No "no_contradiction" assertion here: this node's entire job is to discuss contradictions,
+    # so its own output legitimately contains that word almost every time (even when reporting
+    # "no contradictions found"). Asserting on that substring was tripping on itself and force-
+    # escalating to a pricier tier on nearly every run.
+    res = await base_node(state, "contradiction_detection", prompt)
     return {
         "contradictions": res["content"],
         "nodes_executed": state["nodes_executed"] + ["contradiction_detection"],

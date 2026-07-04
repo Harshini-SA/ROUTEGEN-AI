@@ -1,5 +1,5 @@
 import React from 'react';
-import { List, AlertCircle, CheckCircle2, FileText } from 'lucide-react';
+import { List, AlertCircle, CheckCircle2, FileText, ArrowRightLeft } from 'lucide-react';
 
 const RoutingLogTable = ({ logs }: { logs: any[] }) => {
   return (
@@ -24,10 +24,19 @@ const RoutingLogTable = ({ logs }: { logs: any[] }) => {
                 <span className="px-2 py-0.5 bg-surface rounded text-xs text-text-secondary border border-border">
                   {Math.round(log.latency_ms)}ms
                 </span>
-                {log.fallback_triggered && (
+                {log.tier_escalated && (
                   <span className="px-2 py-0.5 bg-danger/20 text-danger border border-danger/30 rounded text-xs flex items-center space-x-1">
                     <AlertCircle className="w-3 h-3" />
-                    <span>Escalated</span>
+                    <span>Escalated to {log.tier_selected.toUpperCase()}{log.fallback_reason ? ` (${log.fallback_reason})` : ''}</span>
+                  </span>
+                )}
+                {log.fallback_model && (
+                  <span className="px-2 py-0.5 bg-warning/20 text-warning border border-warning/30 rounded text-xs flex items-center space-x-1">
+                    <ArrowRightLeft className="w-3 h-3" />
+                    <span>
+                      Fallback: {log.primary_model?.split('/').pop()} → {log.fallback_model.split('/').pop()}
+                      {log.fallback_reason ? ` (${log.fallback_reason})` : ''}
+                    </span>
                   </span>
                 )}
                 {log.rag_used && (
