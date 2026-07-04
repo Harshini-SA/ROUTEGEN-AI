@@ -86,9 +86,18 @@ app = FastAPI(
 )
 
 # ── CORS Middleware ─────────────────────────────────────────────────────────
+# CORS must be added before any auth so preflight OPTIONS requests get the
+# right headers back. With allow_credentials=True, origins must be explicit
+# (a "*" wildcard is invalid for credentialed requests). Both localhost and
+# 127.0.0.1 are listed so the frontend works regardless of which host it uses.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Tighten in production
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

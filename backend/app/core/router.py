@@ -5,6 +5,7 @@ import litellm
 from litellm import acompletion
 from app.config import settings
 from app.core.classifier import ComplexityScore
+from app.core.energy import get_optimal_model_for_tier, calculate_usage_energy
 
 logger = logging.getLogger("routegen.router")
 
@@ -43,7 +44,7 @@ class DynamicRouter:
             if not models:
                 raise ValueError(f"No models configured for tier: {target_tier}")
                 
-            model_id = models[0]  # Try the first model in the tier
+            model_id = get_optimal_model_for_tier(models)
         
         # ── Debug Logging ───────────────────────────────────────────────
         provider = model_id.split("/")[0] if "/" in model_id else "unknown"
@@ -88,8 +89,13 @@ class DynamicRouter:
                 fallback_rates = {"small": 0.0003, "large": 0.015, "reasoning": 0.04}
                 estimated_cost = fallback_rates.get(target_tier, 0.0)
 
+            # Calculate energy usage based on tokens
+            in_tok = usage.prompt_tokens if usage else 0
+            out_tok = usage.completion_tokens if usage else 0
+            energy_joules, energy_gco2e = calculate_usage_energy(model_id, in_tok, out_tok)
+            
             # Requested Observability Log Format
-            logger.info(f'{{ "router_decision": "{target_tier}", "reasoning_score": {complexity.score}, "exact_cost_usd": {estimated_cost:.6f} }}')
+            logger.info(f'{{ "router_decision": "{target_tier}", "reasoning_score": {complexity.score}, "exact_cost_usd": {estimated_cost:.6f}, "energy_joules": {energy_joules:.4f} }}')
                 
             return {
                 "success": True,
@@ -97,9 +103,11 @@ class DynamicRouter:
                 "model_used": model_id,
                 "tier_selected": target_tier,
                 "latency_ms": latency,
-                "input_tokens": usage.prompt_tokens if usage else 0,
-                "output_tokens": usage.completion_tokens if usage else 0,
+                "input_tokens": in_tok,
+                "output_tokens": out_tok,
                 "cost_usd": estimated_cost,
+                "energy_joules": energy_joules,
+                "energy_gco2e": energy_gco2e,
                 "error": None
             }
             
@@ -118,6 +126,8 @@ class DynamicRouter:
                 "input_tokens": 0,
                 "output_tokens": 0,
                 "cost_usd": 0.0,
+                "energy_joules": 0.0,
+                "energy_gco2e": 0.0,
                 "error": str(e),
                 "error_type": type(e).__name__
             }

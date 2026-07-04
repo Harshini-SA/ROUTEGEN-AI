@@ -19,6 +19,8 @@ interface CompareResult {
     model: string;
     tier: string;
     cost: number;
+    energy_joules: number;
+    energy_gco2e: number;
     latency_ms: number;
     response: string;
     scores: Scores;
@@ -27,6 +29,8 @@ interface CompareResult {
   baseline: {
     model: string;
     cost: number;
+    energy_joules: number;
+    energy_gco2e: number;
     latency_ms: number;
     response: string;
     scores: Scores;
@@ -35,6 +39,9 @@ interface CompareResult {
   savings: {
     cost_savings_usd: number;
     cost_savings_pct: number;
+    energy_joules_saved: number;
+    energy_joules_saved_pct: number;
+    energy_gco2e_saved: number;
     accuracy_delta: number;
     quality_maintained: boolean;
     accuracy_scoring_available: boolean;
@@ -55,6 +62,15 @@ const CHART_TOOLTIP_STYLE = {
   fontSize: '12px'
 };
 
+const preprocessLaTeX = (content: string) => {
+  if (!content) return content;
+  return content
+    .replace(/\\\[/g, '$$$$')
+    .replace(/\\\]/g, '$$$$')
+    .replace(/\\\(/g, '$$')
+    .replace(/\\\)/g, '$$');
+};
+
 const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId }) => {
   const [prompt, setPrompt] = useState('');
   const [isRunning, setIsRunning] = useState(false);
@@ -68,7 +84,7 @@ const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId 
     setResult(null);
 
     try {
-      const res = await fetch('http://localhost:8000/compare', {
+      const res = await fetch('http://127.0.0.1:8000/compare', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -95,9 +111,15 @@ const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId 
     { name: 'Single Model Baseline', value: result.baseline.scores.overall }
   ] : [];
 
+  const energyData = result ? [
+    { name: 'Smart Routing', value: result.routed.energy_joules },
+    { name: 'Single Model Baseline', value: result.baseline.energy_joules }
+  ] : [];
+
   // Target reference lines drawn in each chart's own unit space (never a dual-axis chart):
   // 60% savings means routed cost should sit at or below 40% of baseline cost.
   const savingsTargetCost = result ? result.baseline.cost * 0.4 : 0;
+  const savingsTargetEnergy = result ? result.baseline.energy_joules * 0.4 : 0;
   // "Quality maintained" per the backend threshold: routed can drop at most 1 point below baseline.
   const qualityFloor = result ? Math.max(0, result.baseline.scores.overall - 1) : 0;
 
@@ -159,7 +181,7 @@ const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId 
                 : <AlertTriangle className="w-6 h-6 text-danger shrink-0" />}
               <div>
                 <p className={`text-lg font-bold ${result.savings.quality_maintained ? 'text-success' : 'text-danger'}`}>
-                  Saved {result.savings.cost_savings_pct.toFixed(0)}% cost
+                  Saved {result.savings.cost_savings_pct.toFixed(0)}% cost & {result.savings.energy_joules_saved_pct.toFixed(0)}% energy
                   {result.savings.accuracy_scoring_available && (
                     result.savings.quality_maintained
                       ? ' | Quality maintained ✓'
@@ -193,10 +215,14 @@ const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId 
                   </span>
                 </div>
                 <p className="text-xs text-text-secondary mb-3 truncate" title={result.routed.model}>{result.routed.model}</p>
-                <div className="grid grid-cols-3 gap-2 mb-3">
+                <div className="grid grid-cols-4 gap-2 mb-3">
                   <div className="bg-background rounded-lg p-2 border border-border">
                     <p className="text-[10px] text-text-secondary uppercase">Cost</p>
                     <p className="text-sm font-bold text-success">${result.routed.cost.toFixed(5)}</p>
+                  </div>
+                  <div className="bg-background rounded-lg p-2 border border-border">
+                    <p className="text-[10px] text-text-secondary uppercase">Energy</p>
+                    <p className="text-sm font-bold text-success" title={`${result.routed.energy_gco2e.toFixed(5)} gCO2e`}>{result.routed.energy_joules.toFixed(4)}J</p>
                   </div>
                   <div className="bg-background rounded-lg p-2 border border-border">
                     <p className="text-[10px] text-text-secondary uppercase">Latency</p>
@@ -214,7 +240,7 @@ const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId 
                     components={{
                       ul: ({node, ...props}: any) => <ul className="list-disc ml-4 my-2 space-y-1" {...props} />,
                       ol: ({node, ...props}: any) => <ol className="list-decimal ml-4 my-2 space-y-1" {...props} />,
-                      li: ({node, ...props}: any) => <li className="ml-2" {...props} />,
+                      li: ({node, ...props}: any) => <li className="ml-2 leading-relaxed" {...props} />,
                       h1: ({node, ...props}: any) => <h1 className="text-xl font-bold my-3" {...props} />,
                       h2: ({node, ...props}: any) => <h2 className="text-lg font-bold my-2" {...props} />,
                       h3: ({node, ...props}: any) => <h3 className="text-base font-semibold my-2" {...props} />,
@@ -223,9 +249,13 @@ const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId 
                         : <code className="block bg-gray-800 p-3 rounded my-2 text-sm font-mono overflow-x-auto" {...props} />,
                       p: ({node, ...props}: any) => <p className="my-2 leading-relaxed" {...props} />,
                       strong: ({node, ...props}: any) => <strong className="font-bold" {...props} />,
+                      blockquote: ({node, ...props}: any) => <blockquote className="border-l-4 border-indigo-500 pl-4 my-2 italic text-gray-300" {...props} />,
+                      table: ({node, ...props}: any) => <table className="border-collapse my-3 w-full text-sm" {...props} />,
+                      th: ({node, ...props}: any) => <th className="border border-gray-600 px-3 py-2 bg-gray-800 font-bold" {...props} />,
+                      td: ({node, ...props}: any) => <td className="border border-gray-600 px-3 py-2" {...props} />,
                     }}
                   >
-                    {result.routed.response || '_No response generated._'}
+                    {preprocessLaTeX(result.routed.response || '_No response generated._')}
                   </ReactMarkdown>
                 </div>
               </div>
@@ -242,10 +272,14 @@ const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId 
                   </span>
                 </div>
                 <p className="text-xs text-text-secondary mb-3 truncate" title={result.baseline.model}>{result.baseline.model}</p>
-                <div className="grid grid-cols-3 gap-2 mb-3">
+                <div className="grid grid-cols-4 gap-2 mb-3">
                   <div className="bg-background rounded-lg p-2 border border-border">
                     <p className="text-[10px] text-text-secondary uppercase">Cost</p>
                     <p className="text-sm font-bold text-danger">${result.baseline.cost.toFixed(5)}</p>
+                  </div>
+                  <div className="bg-background rounded-lg p-2 border border-border">
+                    <p className="text-[10px] text-text-secondary uppercase">Energy</p>
+                    <p className="text-sm font-bold text-danger" title={`${result.baseline.energy_gco2e.toFixed(5)} gCO2e`}>{result.baseline.energy_joules.toFixed(4)}J</p>
                   </div>
                   <div className="bg-background rounded-lg p-2 border border-border">
                     <p className="text-[10px] text-text-secondary uppercase">Latency</p>
@@ -263,7 +297,7 @@ const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId 
                     components={{
                       ul: ({node, ...props}: any) => <ul className="list-disc ml-4 my-2 space-y-1" {...props} />,
                       ol: ({node, ...props}: any) => <ol className="list-decimal ml-4 my-2 space-y-1" {...props} />,
-                      li: ({node, ...props}: any) => <li className="ml-2" {...props} />,
+                      li: ({node, ...props}: any) => <li className="ml-2 leading-relaxed" {...props} />,
                       h1: ({node, ...props}: any) => <h1 className="text-xl font-bold my-3" {...props} />,
                       h2: ({node, ...props}: any) => <h2 className="text-lg font-bold my-2" {...props} />,
                       h3: ({node, ...props}: any) => <h3 className="text-base font-semibold my-2" {...props} />,
@@ -272,17 +306,20 @@ const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId 
                         : <code className="block bg-gray-800 p-3 rounded my-2 text-sm font-mono overflow-x-auto" {...props} />,
                       p: ({node, ...props}: any) => <p className="my-2 leading-relaxed" {...props} />,
                       strong: ({node, ...props}: any) => <strong className="font-bold" {...props} />,
+                      blockquote: ({node, ...props}: any) => <blockquote className="border-l-4 border-indigo-500 pl-4 my-2 italic text-gray-300" {...props} />,
+                      table: ({node, ...props}: any) => <table className="border-collapse my-3 w-full text-sm" {...props} />,
+                      th: ({node, ...props}: any) => <th className="border border-gray-600 px-3 py-2 bg-gray-800 font-bold" {...props} />,
+                      td: ({node, ...props}: any) => <td className="border border-gray-600 px-3 py-2" {...props} />,
                     }}
                   >
-                    {result.baseline.response || '_No response generated._'}
+                    {preprocessLaTeX(result.baseline.response || '_No response generated._')}
                   </ReactMarkdown>
                 </div>
               </div>
             </div>
 
-            {/* Bar Charts — two separate single-axis charts (cost $ and quality pts use different
-                scales, so they are never combined onto one dual-axis chart) */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Bar Charts */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="bg-surface border border-border rounded-2xl p-4">
                 <h3 className="text-xs font-semibold uppercase text-text-secondary mb-3 flex items-center space-x-2">
                   <DollarSign className="w-4 h-4" /> <span>Cost Comparison</span>
@@ -340,6 +377,34 @@ const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId 
                   </ResponsiveContainer>
                 </div>
               </div>
+              <div className="bg-surface border border-border rounded-2xl p-4">
+                <h3 className="text-xs font-semibold uppercase text-text-secondary mb-3 flex items-center space-x-2">
+                  <Zap className="w-4 h-4" /> <span>Energy Comparison</span>
+                </h3>
+                <div className="h-48">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={energyData} margin={{ top: 16, right: 10, left: 10, bottom: 5 }}>
+                      <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#94a3b8' }} />
+                      <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} tickFormatter={(v) => `${v.toFixed(3)}J`} width={45} />
+                      <Tooltip
+                        cursor={{ fill: 'rgba(255,255,255,0.03)' }}
+                        contentStyle={CHART_TOOLTIP_STYLE}
+                        formatter={(v: any) => [`${Number(v).toFixed(4)} Joules`, 'Energy']}
+                      />
+                      <ReferenceLine
+                        y={savingsTargetEnergy}
+                        stroke="#94a3b8"
+                        strokeDasharray="4 4"
+                        label={{ value: '60% savings', position: 'insideTopRight', fontSize: 10, fill: '#94a3b8' }}
+                      />
+                      <Bar dataKey="value" radius={[4, 4, 0, 0]} barSize={56}>
+                        <Cell fill="#10b981" />
+                        <Cell fill="#ef4444" />
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
             </div>
             <p className="text-xs text-text-secondary text-center -mt-2">Target: &gt;60% savings, &lt;2% quality drop</p>
 
@@ -348,8 +413,12 @@ const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId 
               <h3 className="text-xs font-semibold uppercase text-text-secondary mb-2">Hackathon Blueprint Formulas</h3>
               <div className="flex flex-col sm:flex-row sm:space-x-8 space-y-2 sm:space-y-0 font-mono text-sm">
                 <div>
-                  <span className="text-secondary">S</span> = <span className="text-text-primary">C_baseline &minus; &Sigma;(C_node_i)</span>
+                  <span className="text-secondary">S_$</span> = <span className="text-text-primary">C_baseline &minus; &Sigma;(C_node_i)</span>
                   <span className="text-text-secondary ml-2">= ${result.savings.cost_savings_usd.toFixed(5)}</span>
+                </div>
+                <div>
+                  <span className="text-secondary">S_energy</span> = <span className="text-text-primary">E_baseline &minus; &Sigma;(E_node_i)</span>
+                  <span className="text-text-secondary ml-2">= {result.savings.energy_joules_saved.toFixed(4)} J</span>
                 </div>
                 <div>
                   <span className="text-secondary">&Delta;A</span> = <span className="text-text-primary">A_baseline &minus; A_routed</span>

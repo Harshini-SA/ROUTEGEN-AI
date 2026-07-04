@@ -11,6 +11,7 @@ import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import { useOutletContext } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
+import { API_BASE } from '../lib/api';
 
 const ACCEPTED_UPLOAD_TYPES = '.pdf,.pptx,.jpg,.jpeg,.png';
 
@@ -28,6 +29,15 @@ interface SessionSummary {
   created_at: number;
   message_count: number;
 }
+
+const preprocessLaTeX = (content: string) => {
+  if (!content) return content;
+  return content
+    .replace(/\\\[/g, '$$$$')
+    .replace(/\\\]/g, '$$$$')
+    .replace(/\\\(/g, '$$')
+    .replace(/\\\)/g, '$$');
+};
 
 const ChatApp = () => {
   const { session } = useOutletContext<{ session: any }>();
@@ -55,18 +65,22 @@ const ChatApp = () => {
     scrollToBottom();
   }, [messages, isRunning]);
 
-  // Fetch metrics + recent sessions on mount
-  useEffect(() => {
-    fetch('http://localhost:8000/dashboard/metrics', {
+  const fetchMetrics = () => {
+    fetch('http://127.0.0.1:8000/dashboard/metrics', {
       headers: { 'Authorization': `Bearer ${session?.access_token}` }
     })
       .then(res => res.json())
       .then(data => setMetrics(data))
       .catch(console.error);
+  };
+
+  // Fetch metrics + recent sessions on mount
+  useEffect(() => {
+    fetchMetrics();
 
     fetchRecentSessions();
 
-    const ws = new WebSocket('ws://localhost:8000/ws/live');
+    const ws = new WebSocket('ws://127.0.0.1:8000/ws/live');
     ws.onmessage = (event) => {
       setLogs(prev => [JSON.parse(event.data), ...prev].slice(0, 50));
     };
@@ -75,7 +89,7 @@ const ChatApp = () => {
   }, []);
 
   const fetchRecentSessions = () => {
-    fetch('http://localhost:8000/sessions', {
+    fetch(`${API_BASE}/sessions`, {
       headers: { 'Authorization': `Bearer ${session?.access_token}` }
     })
       .then(res => res.json())
@@ -84,7 +98,7 @@ const ChatApp = () => {
   };
 
   const fetchDocuments = (sid: string) => {
-    fetch(`http://localhost:8000/documents/${sid}`, {
+    fetch(`http://127.0.0.1:8000/documents/${sid}`, {
       headers: { 'Authorization': `Bearer ${session?.access_token}` }
     })
       .then(res => res.json())
@@ -102,7 +116,7 @@ const ChatApp = () => {
 
   const handleLoadSession = async (sid: string) => {
     try {
-      const res = await fetch(`http://localhost:8000/sessions/${sid}`, {
+      const res = await fetch(`${API_BASE}/sessions/${sid}`, {
         headers: { 'Authorization': `Bearer ${session?.access_token}` }
       });
       const data = await res.json();
@@ -135,7 +149,7 @@ const ChatApp = () => {
       formData.append('file', file);
       formData.append('session_id', sessionId);
 
-      const res = await fetch('http://localhost:8000/upload', {
+      const res = await fetch(`${API_BASE}/upload`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${session?.access_token}` },
         body: formData
@@ -159,7 +173,7 @@ const ChatApp = () => {
 
   const handleClearDocuments = async () => {
     try {
-      await fetch(`http://localhost:8000/documents/${sessionId}`, {
+      await fetch(`${API_BASE}/documents/${sessionId}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${session?.access_token}` }
       });
@@ -179,11 +193,24 @@ const ChatApp = () => {
     setLogs([]); 
 
     try {
-      const res = await fetch('http://localhost:8000/pipeline/run', {
+      // Fetch a fresh session so the very first message isn't sent with a
+      // stale/undefined token from useOutletContext before auth has hydrated.
+      const { data: { session: freshSession } } = await supabase.auth.getSession();
+      if (!freshSession) {
+        console.error('No session found');
+        setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: "Please log in again." }]);
+        setIsRunning(false);
+        return;
+      }
+      const token = freshSession.access_token;
+
+      console.log('Calling:', `${API_BASE}/pipeline/run`);
+      console.log('Token:', token ? 'present' : 'missing');
+      const res = await fetch(`${API_BASE}/pipeline/run`, {
         method: 'POST',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session?.access_token}` 
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
           query: queryToRun,
@@ -191,6 +218,7 @@ const ChatApp = () => {
         })
       });
       const data = await res.json();
+      console.log('API response:', data);
 
       // Clone the trace in pipeline order BEFORE the sidebar log reverse mutates it.
       const pipelineTrace = Array.isArray(data.logs) ? [...data.logs] : [];
@@ -198,7 +226,7 @@ const ChatApp = () => {
       setMessages(prev => [...prev, {
         id: Date.now().toString(),
         role: 'assistant',
-        content: data.final_report || "No response generated.",
+        content: data.report || "No response generated.",
         cost: data.total_cost,
         trace: pipelineTrace
       }]);
@@ -207,8 +235,9 @@ const ChatApp = () => {
         setLogs(prev => [...data.logs.reverse(), ...prev].slice(0, 50));
       }
 
-      // Refresh recent sessions list
+      // Refresh recent sessions list and metrics
       fetchRecentSessions();
+      fetchMetrics();
     } catch (e) {
       console.error(e);
       setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: "Error connecting to intelligent router." }]);
@@ -430,7 +459,7 @@ const ChatApp = () => {
                               components={{
                                 ul: ({node, ...props}: any) => <ul className="list-disc ml-4 my-2 space-y-1" {...props} />,
                                 ol: ({node, ...props}: any) => <ol className="list-decimal ml-4 my-2 space-y-1" {...props} />,
-                                li: ({node, ...props}: any) => <li className="ml-2" {...props} />,
+                                li: ({node, ...props}: any) => <li className="ml-2 leading-relaxed" {...props} />,
                                 h1: ({node, ...props}: any) => <h1 className="text-xl font-bold my-3" {...props} />,
                                 h2: ({node, ...props}: any) => <h2 className="text-lg font-bold my-2" {...props} />,
                                 h3: ({node, ...props}: any) => <h3 className="text-base font-semibold my-2" {...props} />,
@@ -439,9 +468,13 @@ const ChatApp = () => {
                                   : <code className="block bg-gray-800 p-3 rounded my-2 text-sm font-mono overflow-x-auto" {...props} />,
                                 p: ({node, ...props}: any) => <p className="my-2 leading-relaxed" {...props} />,
                                 strong: ({node, ...props}: any) => <strong className="font-bold" {...props} />,
+                                blockquote: ({node, ...props}: any) => <blockquote className="border-l-4 border-indigo-500 pl-4 my-2 italic text-gray-300" {...props} />,
+                                table: ({node, ...props}: any) => <table className="border-collapse my-3 w-full text-sm" {...props} />,
+                                th: ({node, ...props}: any) => <th className="border border-gray-600 px-3 py-2 bg-gray-800 font-bold" {...props} />,
+                                td: ({node, ...props}: any) => <td className="border border-gray-600 px-3 py-2" {...props} />,
                               }}
                             >
-                              {msg.content}
+                              {preprocessLaTeX(msg.content)}
                             </ReactMarkdown>
                           </div>
                         </div>

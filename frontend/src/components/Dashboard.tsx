@@ -5,6 +5,7 @@ import RoutingLogTable from './panels/RoutingLogTable';
 import CachePanel from './panels/CachePanel';
 import QualityPanel from './panels/QualityPanel';
 import { Activity, Play } from 'lucide-react';
+import { API_BASE } from '../lib/api';
 
 const Dashboard = () => {
   const [logs, setLogs] = useState<any[]>([]);
@@ -14,18 +15,18 @@ const Dashboard = () => {
 
   useEffect(() => {
     // Fetch initial metrics
-    fetch('http://localhost:8000/dashboard/metrics')
+    fetch('http://127.0.0.1:8000/dashboard/metrics')
       .then(res => res.json())
       .then(data => setMetrics(data))
       .catch(console.error);
 
-    fetch('http://localhost:8000/cache/stats')
+    fetch('http://127.0.0.1:8000/cache/stats')
       .then(res => res.json())
       .then(data => setCacheStats(data))
       .catch(console.error);
 
     // Setup websocket
-    const socket = io('ws://localhost:8000', { path: '/ws/live', transports: ['websocket'] });
+    const socket = io('ws://127.0.0.1:8000', { path: '/ws/live', transports: ['websocket'] });
     socket.on('message', (data) => {
       setLogs(prev => [JSON.parse(data), ...prev].slice(0, 50));
     });
@@ -36,7 +37,8 @@ const Dashboard = () => {
   const runPipeline = async () => {
     setIsRunning(true);
     try {
-      const res = await fetch('http://localhost:8000/pipeline/run', {
+      console.log('Calling:', `${API_BASE}/pipeline/run`);
+      const res = await fetch(`${API_BASE}/pipeline/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: 'What is the current state of AI regulation in the EU?' })

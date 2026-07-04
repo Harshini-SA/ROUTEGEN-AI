@@ -8,7 +8,7 @@ from app.core.classifier import classifier
 from app.core.fallback import fallback_manager
 from app.pipeline.demo_pipeline import demo_pipeline
 from app.core.cache import semantic_cache
-from app.core.session_store import session_store
+from app.core.db import db_store
 from app.core.rag_store import rag_store
 from app.core.file_processor import extract_text
 from app.api.auth import get_current_user
@@ -63,14 +63,20 @@ async def run_pipeline(request: PipelineRequest, user_id: str = Depends(get_curr
     """Run the 5-node demo pipeline with conversation memory."""
     
     # 1. Session management — get existing or create new
-    session = session_store.get_or_create(user_id, request.session_id)
-    sid = session.session_id
+    if request.session_id and db_store.verify_session_owner(request.session_id, user_id):
+        sid = request.session_id
+    else:
+        sid = db_store.create_session(user_id, title="New Chat", session_id=request.session_id)
+        if not request.session_id:
+            # Auto generate title from first query
+            title = request.query[:60] + ("..." if len(request.query) > 60 else "")
+            db_store.update_session_title(sid, title)
     
     # 2. Append the user's message to session history
-    session_store.append_message(user_id, sid, "user", request.query)
+    db_store.append_message(sid, "user", request.query)
     
     # 3. Get trimmed conversation history (last 10 messages for token control)
-    conversation_history = session_store.get_recent_history(user_id, sid, n=10)
+    conversation_history = db_store.get_session_messages(sid, user_id, n_recent=10)
 
     # 4. RAG — retrieve relevant chunks from any documents uploaded to this session
     rag = _build_rag_context(sid, request.query)
@@ -141,12 +147,14 @@ Return ONLY valid JSON: {{"score_a": 8, "score_b": 7, "reason": "..."}}"""
         
         # 4. Append assistant response to session history
         assistant_response = final_state.get("final_report", "")
-        session_store.append_message(user_id, sid, "assistant", assistant_response)
+        db_store.append_message(sid, "assistant", assistant_response, cost=final_state.get("total_cost", 0.0), energy_joules=final_state.get("total_joules", 0.0), energy_gco2e=final_state.get("total_gco2e", 0.0))
             
         return {
             "session_id": sid,
-            "final_report": assistant_response,
-            "total_cost": final_state.get("total_cost"),
+            "report": assistant_response,
+            "total_cost": final_state.get("total_cost", 0.0),
+            "total_joules": final_state.get("total_joules", 0.0),
+            "total_gco2e": final_state.get("total_gco2e", 0.0),
             "logs": final_state.get("routing_logs"),
             "baseline_report": final_base_state.get("final_report"),
             "baseline_cost": final_base_state.get("total_cost"),
@@ -162,12 +170,14 @@ Return ONLY valid JSON: {{"score_a": 8, "score_b": 7, "reason": "..."}}"""
         
         # 4. Append assistant response to session history
         assistant_response = final_state.get("final_report", "")
-        session_store.append_message(user_id, sid, "assistant", assistant_response)
+        db_store.append_message(sid, "assistant", assistant_response, cost=final_state.get("total_cost", 0.0), energy_joules=final_state.get("total_joules", 0.0), energy_gco2e=final_state.get("total_gco2e", 0.0))
         
         return {
             "session_id": sid,
-            "final_report": assistant_response,
-            "total_cost": final_state.get("total_cost"),
+            "report": assistant_response,
+            "total_cost": final_state.get("total_cost", 0.0),
+            "total_joules": final_state.get("total_joules", 0.0),
+            "total_gco2e": final_state.get("total_gco2e", 0.0),
             "logs": final_state.get("routing_logs")
         }
 
@@ -211,6 +221,8 @@ async def compare_prompt(request: CompareRequest, user_id: str = Depends(get_cur
             "final_report": "",
             "nodes_executed": [],
             "total_cost": 0.0,
+            "total_joules": 0.0,
+            "total_gco2e": 0.0,
             "routing_logs": [],
             "rag_used": False,
             "rag_chunk_count": 0,
@@ -233,15 +245,6 @@ async def compare_prompt(request: CompareRequest, user_id: str = Depends(get_cur
 
     routed_response = routed_state.get("final_report", "")
     baseline_response = baseline_state.get("final_report", "")
-
-    # Every node in the routed run is locked to the same tier/model (classification runs
-    # once, at query_parsing — see demo_pipeline.py), so the last log entry is representative.
-    routed_logs = routed_state.get("routing_logs", [])
-    routed_last_log = routed_logs[-1] if routed_logs else {}
-    routed_model = routed_last_log.get("model_used", "unknown")
-    routed_tier = routed_last_log.get("tier_selected", "unknown")
-    routed_cost = routed_state.get("total_cost", 0.0)
-    baseline_cost = baseline_state.get("total_cost", 0.0)
 
     # --- LLM-as-judge scoring ---
     judge_prompt = f"""You are evaluating two AI responses to the same question.
@@ -273,32 +276,64 @@ Return ONLY valid JSON, no extra text:
         baseline_scores = _empty_scores()
 
     # --- Metrics (S = C_baseline - Σ(C_node_i); ΔA computed as routed - baseline so
-    # positive always means "routed is better", per the API contract below) ---
+    # 3. Calculate Savings
+    routed_cost = routed_state.get("total_cost", 0.0)
+    baseline_cost = baseline_state.get("total_cost", 0.0)
+    
+    routed_joules = routed_state.get("total_joules", 0.0)
+    baseline_joules = baseline_state.get("total_joules", 0.0)
+    
+    routed_gco2e = routed_state.get("total_gco2e", 0.0)
+    baseline_gco2e = baseline_state.get("total_gco2e", 0.0)
+    
     cost_savings_usd = baseline_cost - routed_cost
     cost_savings_pct = (cost_savings_usd / baseline_cost * 100) if baseline_cost > 0 else 0.0
+    
+    energy_joules_saved = baseline_joules - routed_joules
+    energy_joules_saved_pct = (energy_joules_saved / baseline_joules * 100) if baseline_joules > 0 else 0.0
+    
+    energy_gco2e_saved = baseline_gco2e - routed_gco2e
+    
+    savings = {
+        "cost_savings_usd": cost_savings_usd,
+        "cost_savings_pct": cost_savings_pct,
+        "energy_joules_saved": energy_joules_saved,
+        "energy_joules_saved_pct": energy_joules_saved_pct,
+        "energy_gco2e_saved": energy_gco2e_saved
+    }
     accuracy_delta = routed_scores.get("overall", 0) - baseline_scores.get("overall", 0)
     quality_maintained = accuracy_delta >= -1.0
 
-    verdict = (
-        f"Saved {cost_savings_pct:.0f}% cost with {accuracy_delta:+.1f} quality delta"
-        if accuracy_scoring_available
-        else f"Saved {cost_savings_pct:.0f}% cost (quality scoring unavailable)"
-    )
+    if accuracy_scoring_available:
+        if quality_maintained and cost_savings_pct > 60 and energy_joules_saved_pct > 60:
+            verdict = "Phenomenal! Cost and energy dropped >60% while quality remained indistinguishable."
+        elif quality_maintained and (cost_savings_pct > 0 or energy_joules_saved_pct > 0):
+            verdict = "Success! Routed model maintained quality while saving resources."
+        elif not quality_maintained and (cost_savings_pct > 0 or energy_joules_saved_pct > 0):
+            verdict = "Tradeoff Warning: Resources were saved, but quality dropped below the -1pt threshold."
+        else:
+            verdict = "Poor Route: Routed model was both lower quality and less efficient."
+    else:
+        verdict = f"Routed model executed successfully, saving {cost_savings_pct:.1f}% cost and {energy_joules_saved_pct:.1f}% energy."
 
     return {
         "prompt": request.prompt,
         "routed": {
-            "model": routed_model,
-            "tier": routed_tier,
+            "model": routed_state.get("routing_logs", [{}])[-1].get("model_used", "unknown"),
+            "tier": routed_state.get("routing_logs", [{}])[-1].get("tier_selected", "unknown"),
             "cost": routed_cost,
+            "energy_joules": routed_joules,
+            "energy_gco2e": routed_gco2e,
             "latency_ms": routed_latency_ms,
             "response": routed_response,
             "scores": routed_scores,
-            "trace": routed_logs
+            "trace": routed_state.get("routing_logs", [])
         },
         "baseline": {
             "model": BASELINE_MODEL,
             "cost": baseline_cost,
+            "energy_joules": baseline_joules,
+            "energy_gco2e": baseline_gco2e,
             "latency_ms": baseline_latency_ms,
             "response": baseline_response,
             "scores": baseline_scores,
@@ -320,12 +355,12 @@ Return ONLY valid JSON, no extra text:
 @router.get("/sessions", tags=["Sessions"])
 async def list_sessions(user_id: str = Depends(get_current_user)):
     """List all conversation sessions (most recent first)."""
-    return session_store.list_sessions(user_id)
+    return db_store.get_user_sessions(user_id)
 
 @router.get("/sessions/{session_id}", tags=["Sessions"])
 async def get_session(session_id: str, user_id: str = Depends(get_current_user)):
     """Get full message history for a session."""
-    session = session_store.get_session(user_id, session_id)
+    session = db_store.get_session(session_id, user_id)
     if not session:
         return {"error": "Session not found"}
     return session
@@ -377,16 +412,9 @@ async def clear_documents(session_id: str, user_id: str = Depends(get_current_us
 
 
 @router.get("/dashboard/metrics", tags=["Dashboard"])
-async def get_metrics():
-    """Return aggregated metrics for the dashboard (Mocked for demo)."""
-    return {
-        "total_savings_pct": 79.5,
-        "baseline_cost": 0.312,
-        "routegen_cost": 0.066,
-        "total_runs": 15,
-        "quality_retention": 98.2,
-        "co2_saved_grams": 45.3
-    }
+async def get_metrics(user_id: str = Depends(get_current_user)):
+    """Return real aggregated metrics for the dashboard."""
+    return db_store.get_user_metrics(user_id)
 
 @router.get("/cache/stats", tags=["Cache"])
 async def get_cache_stats():

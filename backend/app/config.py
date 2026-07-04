@@ -26,6 +26,15 @@ class Settings(BaseSettings):
     # ── Cerebras API ────────────────────────────────────────────────────
     cerebras_api_key: Optional[str] = Field(default=None, alias="CEREBRAS_API_KEY")
 
+    # ── HuggingFace Zero-Shot Complexity Classifier ─────────────────────
+    # When a valid key is present the classifier understands query MEANING via
+    # facebook/bart-large-mnli; otherwise it falls back to the keyword scorer.
+    huggingface_api_key: Optional[str] = Field(default=None, alias="HUGGINGFACE_API_KEY")
+    huggingface_classifier_url: str = Field(
+        default="https://api-inference.huggingface.co/models/facebook/bart-large-mnli",
+        alias="HUGGINGFACE_CLASSIFIER_URL",
+    )
+
     # ── Database URLs ───────────────────────────────────────────────────
     postgres_url: str = Field(
         default="postgresql+asyncpg://postgres:postgres@localhost:5432/routegen",
@@ -60,6 +69,7 @@ class Settings(BaseSettings):
     # ── Supabase Auth & Database ────────────────────────────────────────
     supabase_url: Optional[str] = Field(default=None, alias="SUPABASE_URL")
     supabase_key: Optional[str] = Field(default=None, alias="SUPABASE_KEY")
+    supabase_service_key: Optional[str] = Field(default=None, alias="SUPABASE_SERVICE_KEY")
     supabase_jwt_secret: Optional[str] = Field(default=None, alias="SUPABASE_JWT_SECRET")
 
     # ── Model Tier Configuration ─────────────────────────────────────────

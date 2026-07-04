@@ -21,6 +21,9 @@ export interface TraceEntry {
   rag_chunk_count?: number;
   fallback_model?: string | null;
   fallback_reason?: string | null;
+  classification_reason?: string;
+  classification_confidence?: number;
+  classification_method?: string; // "huggingface" | "keyword_fallback"
 }
 
 interface PipelineVisualizerProps {
@@ -64,6 +67,18 @@ const fmtMs = (ms?: number) => {
   if (ms == null) return '';
   return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
 };
+
+// Second line under Query Parsing: how the complexity was decided.
+// e.g. "HuggingFace: 'complex reasoning' (94% confident)" or "Keyword fallback".
+function nodeClassification(t?: TraceEntry): string {
+  if (!t?.classification_method) return '';
+  const pct = t.classification_confidence != null ? ` (${Math.round(t.classification_confidence * 100)}% confident)` : '';
+  if (t.classification_method === 'huggingface') {
+    // classification_reason already reads "HuggingFace classified as '<label>' with N% confidence"
+    return t.classification_reason || `HuggingFace${pct}`;
+  }
+  return `Keyword fallback${pct}`;
+}
 
 function nodeDetail(nodeId: string, t?: TraceEntry): string {
   if (!t) return '';
@@ -208,6 +223,7 @@ const PipelineVisualizer: React.FC<PipelineVisualizerProps> = ({
           const s = styleFor(st);
           const t = traceByNode.get(node.id);
           const detail = st === 'complete' ? nodeDetail(node.id, t) : '';
+          const classification = st === 'complete' && node.id === 'query_parsing' ? nodeClassification(t) : '';
 
           return (
             <React.Fragment key={node.id}>
@@ -231,6 +247,15 @@ const PipelineVisualizer: React.FC<PipelineVisualizerProps> = ({
                   {detail && (
                     <span className="text-[10px] leading-tight block" style={{ color: C.inkDim }}>
                       {detail}
+                    </span>
+                  )}
+                  {classification && (
+                    <span
+                      className="text-[9px] leading-tight block mt-0.5"
+                      style={{ color: t?.classification_method === 'huggingface' ? C.indigo : C.gray }}
+                      title={t?.classification_reason || ''}
+                    >
+                      {classification}
                     </span>
                   )}
                 </div>

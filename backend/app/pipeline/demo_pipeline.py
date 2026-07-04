@@ -29,6 +29,8 @@ class PipelineState(TypedDict):
     final_report: str
     nodes_executed: List[str]
     total_cost: float
+    total_joules: float
+    total_gco2e: float
     routing_logs: List[Dict[str, Any]]
     baseline_model: str  # Optional flag for comparison
     rag_used: bool
@@ -66,11 +68,19 @@ async def base_node(state: PipelineState, node_name: str, prompt: str, assertion
             )
             response_content = res.choices[0].message.content
             cost = litellm.completion_cost(completion_response=res) or 0.0
+            
+            in_tok = res.usage.prompt_tokens if hasattr(res, "usage") and res.usage else 0
+            out_tok = res.usage.completion_tokens if hasattr(res, "usage") and res.usage else 0
+            from app.core.energy import calculate_usage_energy
+            energy_joules, energy_gco2e = calculate_usage_energy(baseline_model, in_tok, out_tok)
+            
             _logger.info(f"✅ BASELINE OK | Model={baseline_model} | Node={node_name}")
         except Exception as e:
             _logger.error(f"❌ BASELINE FAIL | Model={baseline_model} | Node={node_name} | {type(e).__name__}: {str(e)[:200]}")
             response_content = f"Error: {str(e)}"
             cost = 0.0
+            energy_joules = 0.0
+            energy_gco2e = 0.0
 
         latency = (time.time() - start_time) * 1000
         log_entry = {
@@ -80,13 +90,17 @@ async def base_node(state: PipelineState, node_name: str, prompt: str, assertion
             "complexity_score": 0,
             "latency_ms": latency,
             "cost_usd": cost,
+            "energy_joules": energy_joules,
+            "energy_gco2e": energy_gco2e,
             "fallback_triggered": False,
             "cache_hit": False
         }
         return {
             "content": response_content,
             "log_entry": log_entry,
-            "cost": cost
+            "cost": cost,
+            "energy_joules": energy_joules,
+            "energy_gco2e": energy_gco2e
         }
 
     # --- Normal Routed Path ---
@@ -137,8 +151,13 @@ async def base_node(state: PipelineState, node_name: str, prompt: str, assertion
         "model_used": "cache" if cache_hit else result.get("model_used"),
         "tier_selected": "cache" if cache_hit else result.get("tier_selected"),
         "complexity_score": complexity.score,
+        "classification_reason": getattr(complexity, "reason", ""),
+        "classification_confidence": getattr(complexity, "confidence", 0.0),
+        "classification_method": getattr(complexity, "method", "keyword_fallback"),
         "latency_ms": latency,
         "cost_usd": 0.0 if cache_hit else result.get("cost_usd", 0.0),
+        "energy_joules": 0.0 if cache_hit else result.get("energy_joules", 0.0),
+        "energy_gco2e": 0.0 if cache_hit else result.get("energy_gco2e", 0.0),
         "fallback_triggered": False if cache_hit else result.get("fallback_triggered", False),
         "tier_escalated": False if cache_hit else result.get("tier_escalated", False),
         "primary_model": None if cache_hit else result.get("primary_model"),
@@ -154,6 +173,8 @@ async def base_node(state: PipelineState, node_name: str, prompt: str, assertion
         "content": response_content,
         "log_entry": log_entry,
         "cost": log_entry["cost_usd"],
+        "energy_joules": log_entry["energy_joules"],
+        "energy_gco2e": log_entry["energy_gco2e"],
         "complexity": complexity
     }
 
@@ -165,7 +186,9 @@ async def node_query_parsing(state: PipelineState):
     return {
         "nodes_executed": state["nodes_executed"] + ["query_parsing"],
         "routing_logs": state["routing_logs"] + [res["log_entry"]],
-        "total_cost": state["total_cost"] + res["cost"],
+        "total_cost": state.get("total_cost", 0.0) + res.get("cost", 0.0),
+        "total_joules": state.get("total_joules", 0.0) + res.get("energy_joules", 0.0),
+        "total_gco2e": state.get("total_gco2e", 0.0) + res.get("energy_gco2e", 0.0),
         # Absent on baseline runs (base_node's baseline branch skips classification entirely) — fine,
         # since baseline nodes never consult locked_complexity for routing either.
         "locked_complexity": res.get("complexity")
@@ -180,7 +203,9 @@ async def node_web_search_summarisation(state: PipelineState):
         "context": res["content"],
         "nodes_executed": state["nodes_executed"] + ["web_search_summarisation"],
         "routing_logs": state["routing_logs"] + [res["log_entry"]],
-        "total_cost": state["total_cost"] + res["cost"]
+        "total_cost": state.get("total_cost", 0.0) + res.get("cost", 0.0),
+        "total_joules": state.get("total_joules", 0.0) + res.get("energy_joules", 0.0),
+        "total_gco2e": state.get("total_gco2e", 0.0) + res.get("energy_gco2e", 0.0)
     }
 
 
@@ -192,7 +217,9 @@ async def node_evidence_analysis(state: PipelineState):
         "analysis": res["content"],
         "nodes_executed": state["nodes_executed"] + ["evidence_analysis"],
         "routing_logs": state["routing_logs"] + [res["log_entry"]],
-        "total_cost": state["total_cost"] + res["cost"]
+        "total_cost": state.get("total_cost", 0.0) + res.get("cost", 0.0),
+        "total_joules": state.get("total_joules", 0.0) + res.get("energy_joules", 0.0),
+        "total_gco2e": state.get("total_gco2e", 0.0) + res.get("energy_gco2e", 0.0)
     }
 
 
@@ -208,7 +235,9 @@ async def node_contradiction_detection(state: PipelineState):
         "contradictions": res["content"],
         "nodes_executed": state["nodes_executed"] + ["contradiction_detection"],
         "routing_logs": state["routing_logs"] + [res["log_entry"]],
-        "total_cost": state["total_cost"] + res["cost"]
+        "total_cost": state.get("total_cost", 0.0) + res.get("cost", 0.0),
+        "total_joules": state.get("total_joules", 0.0) + res.get("energy_joules", 0.0),
+        "total_gco2e": state.get("total_gco2e", 0.0) + res.get("energy_gco2e", 0.0)
     }
 
 
@@ -220,7 +249,9 @@ async def node_final_formatting(state: PipelineState):
         "final_report": res["content"],
         "nodes_executed": state["nodes_executed"] + ["final_formatting"],
         "routing_logs": state["routing_logs"] + [res["log_entry"]],
-        "total_cost": state["total_cost"] + res["cost"]
+        "total_cost": state.get("total_cost", 0.0) + res.get("cost", 0.0),
+        "total_joules": state.get("total_joules", 0.0) + res.get("energy_joules", 0.0),
+        "total_gco2e": state.get("total_gco2e", 0.0) + res.get("energy_gco2e", 0.0)
     }
 
 
