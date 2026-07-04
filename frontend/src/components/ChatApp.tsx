@@ -4,7 +4,7 @@ import RoutingLogTable from './panels/RoutingLogTable';
 import DocumentsPanel from './panels/DocumentsPanel';
 import CompareDashboard from './CompareDashboard';
 import PipelineVisualizer from './PipelineVisualizer';
-import { Send, Sparkles, Activity, Clock, Compass, Zap, Settings, ChevronRight, Menu, Plus, Scale, MessageSquare, Search, LogOut, User, Paperclip, X, Loader2 } from 'lucide-react';
+import { Send, Sparkles, Activity, Clock, Compass, Zap, Settings, ChevronRight, Menu, Plus, Scale, MessageSquare, Search, LogOut, User, Paperclip, X, Loader2, Globe } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -61,12 +61,16 @@ const ChatApp = () => {
   
   // Cache stats state
   const [cacheStats, setCacheStats] = useState<any>(null);
+  const [fingerprintStats, setFingerprintStats] = useState<any>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
 
   // Budget Mode state
   const [showBudgetModal, setShowBudgetModal] = useState(false);
   const [budgetInput, setBudgetInput] = useState('');
   const [budgetStatus, setBudgetStatus] = useState<any>(null);
+
+  // Domain Adaptation state
+  const [domainStatus, setDomainStatus] = useState<any>({ domain: 'general', confidence: 0 });
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -161,7 +165,9 @@ const ChatApp = () => {
     fetchMetrics();
     fetchRecentSessions();
     fetchCacheStats();
+    fetchFingerprintStats();
     fetchBudgetStatus();
+    fetchDomainStatus();
 
     const ws = new WebSocket('ws://127.0.0.1:8000/ws/live');
     ws.onmessage = (event) => {
@@ -189,6 +195,15 @@ const ChatApp = () => {
       .catch(console.error);
   };
 
+  const fetchFingerprintStats = () => {
+    fetch(`${API_BASE}/fingerprint/stats`, {
+      headers: { 'Authorization': `Bearer ${session?.access_token}` }
+    })
+      .then(res => res.json())
+      .then(data => setFingerprintStats(data))
+      .catch(console.error);
+  };
+
   const fetchBudgetStatus = () => {
     if (!sessionId) return;
     fetch(`${API_BASE}/budget/status/${sessionId}`, {
@@ -196,6 +211,16 @@ const ChatApp = () => {
     })
       .then(res => res.json())
       .then(data => setBudgetStatus(data))
+      .catch(console.error);
+  };
+
+  const fetchDomainStatus = () => {
+    if (!sessionId) return;
+    fetch(`${API_BASE}/domain/status/${sessionId}`, {
+      headers: { 'Authorization': `Bearer ${session?.access_token}` }
+    })
+      .then(res => res.json())
+      .then(data => setDomainStatus(data))
       .catch(console.error);
   };
 
@@ -254,6 +279,14 @@ const ChatApp = () => {
       })
         .then(r => r.json())
         .then(data => setBudgetStatus(data))
+        .catch(console.error);
+
+      // Fetch domain status for the newly loaded session
+      fetch(`${API_BASE}/domain/status/${sid}`, {
+        headers: { 'Authorization': `Bearer ${session?.access_token}` }
+      })
+        .then(r => r.json())
+        .then(data => setDomainStatus(data))
         .catch(console.error);
 
       const messagesRaw = data.messages || [];
@@ -519,9 +552,10 @@ const ChatApp = () => {
         };
       });
 
-      // Refresh cache and budget stats
+      // Refresh cache, budget, and domain stats
       fetchCacheStats();
       fetchBudgetStatus();
+      fetchDomainStatus();
     } catch (e: any) {
       // A user-triggered retry aborts the previous request — that's not an error.
       if (e?.name === 'AbortError') return;
@@ -890,10 +924,17 @@ const ChatApp = () => {
                         </div>
                         <div className="flex-1 min-w-0 space-y-3">
                           {msg.trace && msg.trace.length > 0 && msg.trace[0].cache_hit && (
-                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-green-500/10 border border-green-500/20 shadow-[0_0_10px_rgba(16,185,129,0.1)] mb-1">
-                              <Zap className="w-3.5 h-3.5 text-green-400" />
-                              <span className="text-[10px] font-bold text-green-400 uppercase tracking-wider">Smart Cached</span>
-                            </div>
+                            msg.trace[0].cache_scope === 'global' ? (
+                              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-violet-500/10 border border-violet-500/20 shadow-[0_0_10px_rgba(139,92,246,0.15)] mb-1">
+                                <Globe className="w-3.5 h-3.5 text-violet-400" />
+                                <span className="text-[10px] font-bold text-violet-300 uppercase tracking-wider">Global Cache</span>
+                              </div>
+                            ) : (
+                              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-green-500/10 border border-green-500/20 shadow-[0_0_10px_rgba(16,185,129,0.1)] mb-1">
+                                <Zap className="w-3.5 h-3.5 text-green-400" />
+                                <span className="text-[10px] font-bold text-green-400 uppercase tracking-wider">Smart Cached</span>
+                              </div>
+                            )
                           )}
                           {msg.budget_downgrade && (
                             <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-warning/10 border border-warning/20 shadow-[0_0_10px_rgba(245,158,11,0.1)] mb-1 mt-1 block w-fit">
@@ -1071,6 +1112,48 @@ const ChatApp = () => {
             </div>
           </div>
 
+          {/* Global Query Fingerprints — PERMANENT cache shared across ALL users */}
+          <div className="mt-8">
+            <h3 className="text-xs font-semibold uppercase text-text-secondary mb-3 flex items-center space-x-2">
+              <Globe className="w-4 h-4 text-violet-400" />
+              <span>Global Query Fingerprints</span>
+            </h3>
+            <div className="global-impact-panel bg-gradient-to-b from-violet-500/10 to-surface rounded-xl border border-violet-500/20 p-4 shadow-[0_0_15px_rgba(139,92,246,0.08)]">
+              <p className="text-[11px] text-violet-300/70 mb-4 leading-relaxed">
+                🌍 A permanent semantic cache shared across <span className="font-semibold text-violet-300">every user</span> — any answered query is reusable by everyone, forever.
+              </p>
+              <div className="flex justify-between items-center mb-4">
+                <span className="text-sm text-text-secondary">Questions Learned</span>
+                <span className="text-lg font-bold text-violet-300">{fingerprintStats?.total_fingerprints || 0}</span>
+              </div>
+              <div className="flex justify-between items-center mb-4">
+                <span className="text-sm text-text-secondary">Reused by Other Users</span>
+                <span className="text-lg font-bold text-white">{fingerprintStats?.total_hits || 0}×</span>
+              </div>
+              <div className="flex justify-between items-center pt-3 border-t border-violet-500/20">
+                <span className="text-sm text-text-secondary">Saved Across ALL Users</span>
+                <span className="text-lg font-bold text-success">${(fingerprintStats?.total_savings || 0).toFixed(4)}</span>
+              </div>
+
+              {fingerprintStats?.top_queries?.length > 0 && (
+                <div className="mt-4 pt-3 border-t border-violet-500/20">
+                  <span className="text-[10px] font-semibold uppercase text-text-secondary tracking-wider">Most Reused Questions</span>
+                  <div className="mt-2 space-y-1.5">
+                    {fingerprintStats.top_queries
+                      .filter((q: any) => (q.hit_count || 0) > 0)
+                      .slice(0, 3)
+                      .map((q: any, i: number) => (
+                        <div key={i} className="flex items-center justify-between gap-2 text-[11px]">
+                          <span className="text-text-secondary truncate" title={q.query_text}>{q.query_text}</span>
+                          <span className="font-mono text-violet-300 shrink-0">{q.hit_count}×</span>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
           <div className="mt-8">
             <h3 className="text-xs font-semibold uppercase text-text-secondary mb-3 flex items-center space-x-2">
               <Clock className="w-4 h-4" />
@@ -1080,6 +1163,23 @@ const ChatApp = () => {
               <RoutingLogTable logs={logs} />
             </div>
           </div>
+          
+          {/* Domain Adaptation Panel */}
+          {domainStatus.domain !== 'general' && (
+            <div className="mt-6 p-4 bg-gradient-to-br from-indigo-500/10 to-surface rounded-xl border border-indigo-500/20 shadow-[0_0_15px_rgba(99,102,241,0.05)]">
+              <h4 className="text-[11px] font-bold uppercase tracking-widest text-text-secondary mb-3 flex items-center gap-1.5">
+                <span>🎯</span> Detected Domain
+              </h4>
+              <div className="flex items-center justify-between">
+                <span className="px-2.5 py-1 rounded-md bg-indigo-500/20 text-indigo-400 font-mono text-sm font-bold border border-indigo-500/30">
+                  {domainStatus.domain.toUpperCase()}
+                </span>
+                <span className="text-xs text-text-secondary font-medium">
+                  {(domainStatus.confidence * 100).toFixed(0)}% confident
+                </span>
+              </div>
+            </div>
+          )}
         </div>
       </div>
       

@@ -68,6 +68,10 @@ class PipelineState(TypedDict):
     rag_sources: List[str]
     locked_complexity: Optional[ComplexityScore]  # Tier decision made once at query_parsing, reused by every node
     predicted_tier: Optional[str]
+    detected_domain: Optional[str]
+    domain_shift: Optional[float]
+    base_score: Optional[float]
+    adjusted_score: Optional[float]
 
 
 async def base_node(state: PipelineState, node_name: str, prompt: str, assertions: List[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -216,8 +220,15 @@ async def base_node(state: PipelineState, node_name: str, prompt: str, assertion
         "cache_hit": cache_hit,
         "rag_used": state.get("rag_used", False),
         "rag_chunk_count": state.get("rag_chunk_count", 0),
-        "rag_sources": state.get("rag_sources", [])
+        "rag_sources": state.get("rag_sources", []),
+        "detected_domain": state.get("detected_domain"),
+        "domain_shift": state.get("domain_shift"),
+        "base_score": state.get("base_score"),
+        "adjusted_score": state.get("adjusted_score")
     }
+
+    if cache_hit:
+        log_entry["similarity"] = cache_similarity
 
     return {
         "content": response_content,

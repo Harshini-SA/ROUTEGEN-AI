@@ -6,6 +6,10 @@ from app.config import settings
 
 security = HTTPBearer()
 
+# Fixed placeholder UUID for the "mock-access-token" dev bypass below — the users.id
+# column is UUID, so the literal string "mock-user-id" fails Postgres's uuid input check.
+MOCK_USER_ID = "00000000-0000-0000-0000-000000000001"
+
 # Initialize Supabase client
 if not settings.supabase_url or not settings.supabase_key:
     supabase: Client = None
@@ -21,8 +25,8 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(
     if not supabase or token == "mock-access-token":
         # Create a mock user in the DB to satisfy foreign keys
         from app.core.db import db_store
-        db_store.get_or_create_user("guest@routegen.ai", "mock-user-id")
-        return "mock-user-id"
+        db_store.get_or_create_user("guest@routegen.ai", MOCK_USER_ID)
+        return MOCK_USER_ID
         
     try:
         # get_user verifies the JWT against Supabase Auth

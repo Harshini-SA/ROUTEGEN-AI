@@ -12,8 +12,9 @@ from app.core.classifier import classifier
 from app.core.fallback import fallback_manager
 from app.pipeline.demo_pipeline import demo_pipeline
 from app.core.smart_cache import smart_cache
+from app.core.fingerprint_cache import fingerprint_cache
 from app.core.budget_manager import budget_manager
-from app.core.router import IntelligentRouter, classify_complexity
+from app.core.domain_adapter import domain_adapter
 from app.core.db import db_store
 from app.core.rag_store import rag_store
 from app.core.file_processor import extract_text
@@ -83,6 +84,78 @@ def get_tier_cost_estimate(tier: str) -> float:
     if tier == "reasoning": return 0.005
     return 0.001
 
+
+def build_cache_response(sid: str, query: str, entry: dict, scope: str) -> Dict[str, Any]:
+    """Build a uniform cache-hit response for both cache layers.
+
+    scope == "session"  → in-process Smart Cache (this browser session, 24h TTL)
+    scope == "global"   → Supabase Query Fingerprint (every user, forever/30d TTL)
+
+    `entry` is the matched record. Session entries use keys response/cost/query/
+    model/tier; global fingerprint rows use response_text/original_cost/query_text/
+    model_used/tier + similarity/hit_count. This normalizes both.
+    """
+    is_global = scope == "global"
+
+    response = entry.get("response_text") if is_global else entry.get("response")
+    saved = entry.get("original_cost") if is_global else entry.get("cost")
+    saved = saved or 0.0
+    original_query = entry.get("query_text") if is_global else entry.get("query")
+    model = entry.get("model_used") if is_global else entry.get("model")
+    tier = entry.get("tier")
+    similarity = entry.get("similarity")
+
+    # Persist the exchange so it shows up in history like any other turn.
+    db_store.append_message(sid, "user", query)
+    db_store.append_message(sid, "assistant", response, cost=0.0, energy_joules=0.0, energy_gco2e=0.0)
+
+    if is_global:
+        hit_count = entry.get("hit_count") or 0
+        sim_str = f"{similarity:.3f}" if isinstance(similarity, (int, float)) else "0.90+"
+        reason = f"🌍 Global fingerprint hit! Another user already asked this — saved ${saved:.6f}"
+        log_node = {
+            "node_id": "fingerprint_cache",
+            "model_used": model or "unknown",
+            "tier_selected": tier or "unknown",
+            "complexity_score": 0.0,
+            "latency_ms": 0.0,
+            "cost_usd": 0.0,
+            "cache_hit": True,
+            "cache_scope": "global",
+            "similarity": sim_str,
+            "hit_count": hit_count,
+            "original_query": original_query,
+            "classification_reason": reason,
+        }
+    else:
+        reason = f"⚡ Cache hit! Saved ${saved:.6f}"
+        log_node = {
+            "node_id": "smart_cache",
+            "model_used": model or "unknown",
+            "tier_selected": tier or "unknown",
+            "complexity_score": 0.0,
+            "latency_ms": 0.0,
+            "cost_usd": 0.0,
+            "cache_hit": True,
+            "cache_scope": "session",
+            "similarity": "0.92+",
+            "original_query": original_query,
+            "classification_reason": reason,
+        }
+
+    return {
+        "session_id": sid,
+        "report": response,
+        "total_cost": 0.0,
+        "total_joules": 0.0,
+        "total_gco2e": 0.0,
+        "cache_hit": True,
+        "cache_scope": scope,
+        "cache_savings": saved,
+        "original_query": original_query,
+        "logs": [log_node],
+    }
+
 @router.post("/pipeline/run", tags=["Pipeline"])
 async def run_pipeline(request: PipelineRequest, user_id: str = Depends(get_current_user)):
     """Run the 5-node demo pipeline with conversation memory."""
@@ -100,36 +173,25 @@ async def run_pipeline(request: PipelineRequest, user_id: str = Depends(get_curr
         title = request.query[:50] + ("..." if len(request.query) > 50 else "")
         db_store.update_session_title(sid, title)
         
-    # Check cache first (only for standard mode, compare mode needs live run)
+    # Check caches first (only for standard mode, compare mode needs live run).
+    # Layer 1: in-process session Smart Cache (fastest, no DB call).
+    # Layer 2: global Query Fingerprint cache (Supabase, shared across ALL users).
     if not request.compare:
         cached = smart_cache.find_similar(request.query)
         if cached:
-            # CACHE HIT — return instantly
-            assistant_response = cached['response']
-            db_store.append_message(sid, "user", request.query)
-            db_store.append_message(sid, "assistant", assistant_response, cost=0.0, energy_joules=0.0, energy_gco2e=0.0)
-            
-            return {
-                "session_id": sid,
-                "report": assistant_response,
-                "total_cost": 0.0,
-                "total_joules": 0.0,
-                "total_gco2e": 0.0,
-                "cache_hit": True,
-                "cache_savings": cached['cost'],
-                "original_query": cached['query'],
-                "logs": [{
-                    "node_id": "smart_cache",
-                    "model_used": cached['model'],
-                    "tier_selected": cached['tier'],
-                    "complexity_score": 0.0,
-                    "latency_ms": 0.0,
-                    "cost_usd": 0.0,
-                    "cache_hit": True,
-                    "similarity": "0.92+",
-                    "classification_reason": f"⚡ Cache hit! Saved ${cached['cost']:.6f}"
-                }]
-            }
+            return build_cache_response(sid, request.query, cached, "session")
+
+        global_match = await fingerprint_cache.find_global_match(request.query)
+        if global_match:
+            # Warm the local session cache so repeats in THIS session skip the DB.
+            smart_cache.store(
+                query=request.query,
+                response=global_match.get("response_text", ""),
+                tier=global_match.get("tier", "unknown"),
+                model=global_match.get("model_used", "unknown"),
+                cost=global_match.get("original_cost", 0.0),
+            )
+            return build_cache_response(sid, request.query, global_match, "global")
     
     # 2. Append the user's message to session history
     db_store.append_message(sid, "user", request.query)
@@ -140,7 +202,7 @@ async def run_pipeline(request: PipelineRequest, user_id: str = Depends(get_curr
     # 4. RAG — retrieve relevant chunks from any documents uploaded to this session
     rag = _build_rag_context(sid, request.query)
     
-    # 5. Classify complexity and run Budget Manager check
+    # 5. Classify complexity, run Domain Adaptation, and run Budget Manager check
     from app.core.classifier import classifier
     if request.predicted_tier:
         from app.core.classifier import ComplexityScore
@@ -163,14 +225,26 @@ async def run_pipeline(request: PipelineRequest, user_id: str = Depends(get_curr
         complexity.score = min(10.0, complexity.score + 1)
         complexity.tier = classifier.tier_for_score(complexity.score)
         
+    base_score = complexity.score
+    
+    # Domain Adaptation
+    domain_adapter.update_profile(sid, request.query)
+    adjusted_score, domain, shift = domain_adapter.get_adjusted_score(sid, base_score)
+    
+    if shift != 0:
+        final_tier = classifier.tier_for_score(adjusted_score)
+        print(f"[DomainAdapter] Adjusted {base_score} → {adjusted_score} ({domain} domain, shift {shift})")
+        complexity.score = adjusted_score
+        complexity.tier = final_tier
+        
     original_tier = complexity.tier
     estimated_cost = get_tier_cost_estimate(original_tier)
     
-    final_tier, was_downgraded, downgrade_reason = budget_manager.check_and_adjust_tier(sid, original_tier, estimated_cost)
+    final_tier_budget, was_downgraded, downgrade_reason = budget_manager.check_and_adjust_tier(sid, original_tier, estimated_cost)
     
     if was_downgraded:
-        print(f"[Budget] Downgraded {original_tier} → {final_tier}: {downgrade_reason}")
-        complexity.tier = final_tier
+        print(f"[Budget] Downgraded {original_tier} → {final_tier_budget}: {downgrade_reason}")
+        complexity.tier = final_tier_budget
         complexity.reason = downgrade_reason
 
     initial_state = {
@@ -188,7 +262,11 @@ async def run_pipeline(request: PipelineRequest, user_id: str = Depends(get_curr
         "rag_chunk_count": rag["chunk_count"],
         "rag_sources": rag["sources"],
         "locked_complexity": complexity,
-        "predicted_tier": request.predicted_tier
+        "predicted_tier": request.predicted_tier,
+        "detected_domain": domain,
+        "domain_shift": shift,
+        "base_score": base_score,
+        "adjusted_score": adjusted_score
     }
 
     if request.compare:
@@ -269,13 +347,26 @@ Return ONLY valid JSON: {{"score_a": 8, "score_b": 7, "reason": "..."}}"""
         # Record actual spend in budget manager
         budget_manager.record_spend(sid, final_state.get("total_cost", 0.0))
         
-        # Store in cache after successful run
+        # Store in both caches after a successful run.
+        run_tier = final_state.get("routing_logs", [{}])[0].get("tier_selected", "unknown") if final_state.get("routing_logs") else "unknown"
+        run_model = final_state.get("routing_logs", [{}])[0].get("model_used", "unknown") if final_state.get("routing_logs") else "unknown"
+        run_cost = final_state.get("total_cost", 0.0)
+
+        # Layer 1: in-process session cache.
         smart_cache.store(
             query=request.query,
             response=assistant_response,
-            tier=final_state.get("routing_logs", [{}])[0].get("tier_selected", "unknown") if final_state.get("routing_logs") else "unknown",
-            model=final_state.get("routing_logs", [{}])[0].get("model_used", "unknown") if final_state.get("routing_logs") else "unknown",
-            cost=final_state.get("total_cost", 0.0)
+            tier=run_tier,
+            model=run_model,
+            cost=run_cost,
+        )
+        # Layer 2: global fingerprint — make this answer reusable by EVERY future user.
+        await fingerprint_cache.store_fingerprint(
+            query=request.query,
+            response=assistant_response,
+            tier=run_tier,
+            model=run_model,
+            cost=run_cost,
         )
         
         return {
@@ -538,6 +629,11 @@ async def clear_cache():
     smart_cache.clear()
     return {"status": "cleared"}
 
+@router.get("/fingerprint/stats", tags=["Cache"])
+async def fingerprint_stats():
+    """Return GLOBAL query-fingerprint stats (shared across all users)."""
+    return await fingerprint_cache.get_global_stats()
+
 class BudgetRequest(BaseModel):
     limit: float
 
@@ -551,6 +647,18 @@ async def set_budget(session_id: str, request: BudgetRequest):
 async def get_budget_status(session_id: str):
     """Get the current budget status for a session."""
     return budget_manager.get_status(session_id)
+
+@router.get("/domain/status/{session_id}", tags=["Domain"])
+async def get_domain_status(session_id: str):
+    """Get the current learned domain profile for a session."""
+    profile = domain_adapter.profiles.get(session_id)
+    if not profile:
+        return {"domain": "general", "confidence": 0}
+    return {
+        "domain": profile.dominant_domain,
+        "confidence": profile.confidence,
+        "queries_analyzed": len(profile.query_history)
+    }
 
 # --- WebSocket for Live Logs ---
 class ConnectionManager:

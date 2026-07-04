@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Clock, Loader2, CheckCircle2, ChevronRight, ChevronDown, Activity, GitBranch, Zap } from 'lucide-react';
+import { Clock, Loader2, CheckCircle2, ChevronRight, ChevronDown, Activity, GitBranch, Zap, Globe } from 'lucide-react';
 
 /**
  * Live 5-node pipeline progress visualizer.
@@ -25,7 +25,14 @@ export interface TraceEntry {
   classification_confidence?: number;
   classification_method?: string; // "huggingface" | "keyword_fallback"
   cache_hit?: boolean;
+  cache_scope?: 'session' | 'global';
+  hit_count?: number;
+  original_query?: string;
   similarity?: string;
+  detected_domain?: string;
+  domain_shift?: number;
+  base_score?: number;
+  adjusted_score?: number;
 }
 
 interface PipelineVisualizerProps {
@@ -90,6 +97,9 @@ function nodeDetail(nodeId: string, t?: TraceEntry): string {
   if (!t) return '';
   switch (nodeId) {
     case 'query_parsing':
+      if (t.domain_shift && t.domain_shift !== 0 && t.detected_domain && t.base_score && t.adjusted_score) {
+        return `Score: ${t.base_score.toFixed(1)} → ${t.adjusted_score.toFixed(1)} (adjusted for ${t.detected_domain.toUpperCase()} domain)`;
+      }
       return `Score: ${(t.complexity_score ?? 0).toFixed(1)} → ${cap(t.tier_selected)} Tier`;
     case 'web_search_summarisation':
       return t.rag_used ? `RAG: ${t.rag_chunk_count ?? 0} chunks retrieved` : 'No documents';
@@ -174,6 +184,38 @@ const PipelineVisualizer: React.FC<PipelineVisualizerProps> = ({
   if (trace && trace.length > 0 && trace[0].cache_hit) {
     const hit = trace[0];
     const savedStr = hit.classification_reason?.match(/\$([0-9.]+)/)?.[1] || '0.00';
+    const isGlobal = hit.cache_scope === 'global';
+
+    if (isGlobal) {
+      // Global fingerprint hit — a DIFFERENT user already asked this. Purple/indigo
+      // to distinguish it from the green session cache.
+      return (
+        <div className="rounded-xl border border-violet-500/30 bg-violet-900/10 p-4 w-full flex items-center justify-between shadow-[0_0_15px_rgba(139,92,246,0.15)]">
+          <div className="flex items-center space-x-4">
+            <div className="w-10 h-10 rounded-full bg-violet-500/20 flex items-center justify-center border border-violet-500/30 shadow-[0_0_10px_rgba(139,92,246,0.25)]">
+              <Globe className="w-5 h-5 text-violet-400 drop-shadow-[0_0_5px_rgba(139,92,246,0.6)]" />
+            </div>
+            <div>
+              <h3 className="text-[13px] font-bold text-violet-300 tracking-wide">
+                🌍 GLOBAL CACHE HIT — someone else already asked this!
+              </h3>
+              <p className="text-[11px] text-violet-300/70 mt-1 uppercase tracking-wider">
+                Reused across users
+                {hit.similarity ? ` · ${hit.similarity} similarity` : ''}
+                {hit.hit_count != null ? ` · reuse #${hit.hit_count}` : ''}
+                {' · <50ms'}
+              </p>
+            </div>
+          </div>
+          <div className="text-right">
+            <div className="text-xs font-mono text-text-secondary">Cost: <span className="text-white">$0.00</span></div>
+            <div className="text-xs font-mono text-violet-300 mt-1">Saved: ${savedStr}</div>
+          </div>
+        </div>
+      );
+    }
+
+    // Session Smart Cache hit — this browser session, green.
     return (
       <div className="rounded-xl border border-green-500/30 bg-green-900/10 p-4 w-full flex items-center justify-between shadow-[0_0_15px_rgba(16,185,129,0.1)]">
         <div className="flex items-center space-x-4">
@@ -182,7 +224,7 @@ const PipelineVisualizer: React.FC<PipelineVisualizerProps> = ({
           </div>
           <div>
             <h3 className="text-[13px] font-bold text-green-400 tracking-wide">
-              ⚡ SMART CACHE HIT
+              ⚡ SMART CACHE HIT (this session)
             </h3>
             <p className="text-[11px] text-green-400/70 mt-1 uppercase tracking-wider">Matched previous query · Response time: {'<50ms'}</p>
           </div>
