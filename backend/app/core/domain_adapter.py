@@ -111,3 +111,6 @@ class DomainAdapter:
         adjusted = max(1.0, min(10.0, adjusted))
         
         return (adjusted, profile.dominant_domain, -shift)
+
+domain_adapter = DomainAdapter()
+
