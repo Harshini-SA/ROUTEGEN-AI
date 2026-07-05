@@ -125,14 +125,23 @@ const PipelineVisualizer: React.FC<PipelineVisualizerProps> = ({
   const traceByNode = new Map((trace || []).map((t) => [t.node_id, t]));
 
   // completedCount = how many nodes have finished; the node at that index is "active".
-  const [completedCount, setCompletedCount] = useState(live ? 0 : 0);
+  // Historical/collapsed traces (defaultCollapsed) are already-complete data with no live
+  // animation to run — start them fully "complete" so expanding the pill later shows the
+  // saved trace immediately instead of a permanently-spinning first node (completedCount
+  // stuck at 0 forever, since the stagger effect below intentionally skips these).
+  const [completedCount, setCompletedCount] = useState(defaultCollapsed ? NODES.length : 0);
   const [sweep, setSweep] = useState(0); // live-mode scanning pointer
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   // Staggered "each node completes" animation, driven from the (already-complete) trace.
   useEffect(() => {
-    if (live || !trace || trace.length === 0 || defaultCollapsed) return;
+    if (live || !trace || trace.length === 0) return;
+    if (defaultCollapsed) {
+      // Historical trace — no animation, just render as fully complete.
+      setCompletedCount(NODES.length);
+      return;
+    }
     timers.current.forEach(clearTimeout);
     timers.current = [];
     setCompletedCount(0);
@@ -145,7 +154,7 @@ const PipelineVisualizer: React.FC<PipelineVisualizerProps> = ({
       );
     }
     return () => timers.current.forEach(clearTimeout);
-  }, [trace, live, autoCollapse]);
+  }, [trace, live, autoCollapse, defaultCollapsed]);
 
   // Live sweep while the pipeline is actually running (no data yet).
   useEffect(() => {

@@ -7,6 +7,7 @@ import logging
 logger = logging.getLogger("routegen.api")
 from typing import Dict, Any, List, Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, UploadFile, File, Form
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from app.core.classifier import classifier
 from app.core.fallback import fallback_manager
@@ -105,10 +106,6 @@ def build_cache_response(sid: str, query: str, entry: dict, scope: str) -> Dict[
     tier = entry.get("tier")
     similarity = entry.get("similarity")
 
-    # Persist the exchange so it shows up in history like any other turn.
-    db_store.append_message(sid, "user", query)
-    db_store.append_message(sid, "assistant", response, cost=0.0, energy_joules=0.0, energy_gco2e=0.0)
-
     if is_global:
         hit_count = entry.get("hit_count") or 0
         sim_str = f"{similarity:.3f}" if isinstance(similarity, (int, float)) else "0.90+"
@@ -143,6 +140,17 @@ def build_cache_response(sid: str, query: str, entry: dict, scope: str) -> Dict[
             "classification_reason": reason,
         }
 
+    # Persist the exchange so it shows up in history like any other turn — including the
+    # cache-hit trace itself, so reloading this session later still shows "SMART CACHE HIT"
+    # / "GLOBAL CACHE HIT" instead of an "Unknown tier" placeholder.
+    db_store.append_message(sid, "user", query)
+    db_store.append_message(
+        sid, "assistant", response,
+        model_used=model or "unknown", tier=tier or "unknown",
+        cost=0.0, energy_joules=0.0, energy_gco2e=0.0,
+        trace_data=[log_node],
+    )
+
     return {
         "session_id": sid,
         "report": response,
@@ -156,10 +164,46 @@ def build_cache_response(sid: str, query: str, entry: dict, scope: str) -> Dict[
         "logs": [log_node],
     }
 
+def _redact_secrets(text: str) -> str:
+    """
+    Scrub every secret-looking environment variable value out of debug text before it's
+    printed or returned over HTTP. Matches on env var NAME (contains KEY/SECRET/TOKEN/
+    PASSWORD) rather than a hardcoded list, so it covers litellm provider keys too — those
+    are read straight from os.environ by litellm itself, not from our `settings` object.
+    """
+    redacted = text
+    for name, value in os.environ.items():
+        if not value or len(value) < 8:
+            continue
+        if any(marker in name.upper() for marker in ("KEY", "SECRET", "TOKEN", "PASSWORD")):
+            redacted = redacted.replace(value, "[REDACTED]")
+    return redacted
+
+
 @router.post("/pipeline/run", tags=["Pipeline"])
 async def run_pipeline(request: PipelineRequest, user_id: str = Depends(get_current_user)):
     """Run the 5-node demo pipeline with conversation memory."""
-    
+    # TEMPORARY (debugging "Error connecting to intelligent router" on repeated failure of
+    # a specific Reasoning-tier query): catch-all so a raw traceback comes back in the HTTP
+    # response instead of the frontend's generic "Error connecting to intelligent router."
+    # Remove this wrapper once the root cause is confirmed fixed.
+    try:
+        return await _run_pipeline_impl(request, user_id)
+    except Exception as e:
+        import traceback
+        error_detail = _redact_secrets(traceback.format_exc())
+        error_message = _redact_secrets(str(e))
+        print(f"[CRITICAL ERROR] {error_detail}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": error_message,
+                "traceback": error_detail
+            }
+        )
+
+
+async def _run_pipeline_impl(request: PipelineRequest, user_id: str):
     # 1. Session management — get existing or create new
     is_new = False
     if request.session_id and db_store.verify_session_owner(request.session_id, user_id):
@@ -172,7 +216,7 @@ async def run_pipeline(request: PipelineRequest, user_id: str = Depends(get_curr
         # Auto generate title from first query
         title = request.query[:50] + ("..." if len(request.query) > 50 else "")
         db_store.update_session_title(sid, title)
-        
+
     # Check caches first (only for standard mode, compare mode needs live run).
     # Layer 1: in-process session Smart Cache (fastest, no DB call).
     # Layer 2: global Query Fingerprint cache (Supabase, shared across ALL users).
@@ -192,16 +236,16 @@ async def run_pipeline(request: PipelineRequest, user_id: str = Depends(get_curr
                 cost=global_match.get("original_cost", 0.0),
             )
             return build_cache_response(sid, request.query, global_match, "global")
-    
+
     # 2. Append the user's message to session history
     db_store.append_message(sid, "user", request.query)
-    
+
     # 3. Get trimmed conversation history (last 10 messages for token control)
     conversation_history = db_store.get_session_messages(sid, user_id, n_recent=10)
 
     # 4. RAG — retrieve relevant chunks from any documents uploaded to this session
     rag = _build_rag_context(sid, request.query)
-    
+
     # 5. Classify complexity, run Domain Adaptation, and run Budget Manager check
     from app.core.classifier import classifier
     if request.predicted_tier:
@@ -219,31 +263,40 @@ async def run_pipeline(request: PipelineRequest, user_id: str = Depends(get_curr
         logger.info(f"Using predicted tier: {tier} (skipped classifier)")
     else:
         complexity = classifier.score_prompt_in_context(rag["prompt"], conversation_history)
-    
+
+    print(f"[TIER DEBUG] Query: {request.query!r}")
+    print(f"[TIER DEBUG] 1) Classifier raw: score={complexity.score} tier={complexity.tier} method={complexity.method}")
+
     # Adjust for RAG
     if rag["used"]:
         complexity.score = min(10.0, complexity.score + 1)
         complexity.tier = classifier.tier_for_score(complexity.score)
-        
+
+    print(f"[TIER DEBUG] 2) After RAG bump: rag_used={rag['used']} score={complexity.score} tier={complexity.tier}")
+
     base_score = complexity.score
-    
+
     # Domain Adaptation
     domain_adapter.update_profile(sid, request.query)
     adjusted_score, domain, shift = domain_adapter.get_adjusted_score(sid, base_score)
-    
+
+    print(f"[TIER DEBUG] 3) Domain adaptation: domain={domain} shift={shift} base_score={base_score} adjusted_score={adjusted_score}")
+
     if shift != 0:
         final_tier = classifier.tier_for_score(adjusted_score)
-        print(f"[DomainAdapter] Adjusted {base_score} → {adjusted_score} ({domain} domain, shift {shift})")
+        print(f"[DomainAdapter] Adjusted {base_score} -> {adjusted_score} ({domain} domain, shift {shift})")
         complexity.score = adjusted_score
         complexity.tier = final_tier
-        
+
     original_tier = complexity.tier
     estimated_cost = get_tier_cost_estimate(original_tier)
-    
+
+    print(f"[TIER DEBUG] 4) FINAL: score={complexity.score} tier={original_tier}")
+
     final_tier_budget, was_downgraded, downgrade_reason = budget_manager.check_and_adjust_tier(sid, original_tier, estimated_cost)
-    
+
     if was_downgraded:
-        print(f"[Budget] Downgraded {original_tier} → {final_tier_budget}: {downgrade_reason}")
+        print(f"[Budget] Downgraded {original_tier} -> {final_tier_budget}: {downgrade_reason}")
         complexity.tier = final_tier_budget
         complexity.reason = downgrade_reason
 
@@ -290,14 +343,14 @@ async def run_pipeline(request: PipelineRequest, user_id: str = Depends(get_curr
             "rag_chunk_count": rag["chunk_count"],
             "rag_sources": rag["sources"]
         }
-        
+
         # Run LangGraph pipeline concurrently
         final_state, final_base_state = await asyncio.gather(
             demo_pipeline.ainvoke(initial_state),
             demo_pipeline.ainvoke(baseline_state)
         )
-        
-        judge_prompt = f"""You are an expert evaluator. 
+
+        judge_prompt = f"""You are an expert evaluator.
 Query: {request.query}
 Output A (Routed AI): {final_state.get('final_report')}
 Output B (Baseline AI): {final_base_state.get('final_report')}
@@ -312,15 +365,23 @@ Return ONLY valid JSON: {{"score_a": 8, "score_b": 7, "reason": "..."}}"""
             judge_score = json.loads(judge_res.choices[0].message.content)
         except Exception as e:
             judge_score = {"score_a": 0, "score_b": 0, "reason": f"Failed to judge: {str(e)}"}
-            
+
         # Broadcast routed logs
         for log in final_state["routing_logs"]:
             await broadcast_log(log)
-        
-        # 4. Append assistant response to session history
+
+        # 4. Append assistant response to session history — same trace_data persistence as
+        # the standard branch, so a reloaded compare-mode session also shows its real trace.
         assistant_response = final_state.get("final_report", "")
-        db_store.append_message(sid, "assistant", assistant_response, cost=final_state.get("total_cost", 0.0), energy_joules=final_state.get("total_joules", 0.0), energy_gco2e=final_state.get("total_gco2e", 0.0))
-            
+        compare_tier = final_state.get("routing_logs", [{}])[0].get("tier_selected", "unknown") if final_state.get("routing_logs") else "unknown"
+        compare_model = final_state.get("routing_logs", [{}])[0].get("model_used", "unknown") if final_state.get("routing_logs") else "unknown"
+        db_store.append_message(
+            sid, "assistant", assistant_response,
+            model_used=compare_model, tier=compare_tier,
+            cost=final_state.get("total_cost", 0.0), energy_joules=final_state.get("total_joules", 0.0), energy_gco2e=final_state.get("total_gco2e", 0.0),
+            trace_data=final_state.get("routing_logs"),
+        )
+
         return {
             "session_id": sid,
             "report": assistant_response,
@@ -335,23 +396,29 @@ Return ONLY valid JSON: {{"score_a": 8, "score_b": 7, "reason": "..."}}"""
     else:
         # Run standard LangGraph pipeline
         final_state = await demo_pipeline.ainvoke(initial_state)
-        
+
         # Broadcast logs via websocket
         for log in final_state["routing_logs"]:
             await broadcast_log(log)
-        
-        # 4. Append assistant response to session history
+
+        # 4. Append assistant response to session history — including the full per-node
+        # routing_logs trace, so reloading this session later renders the ORIGINAL trace
+        # (real tier/model/cost per node) instead of a reconstructed "Unknown" placeholder.
         assistant_response = final_state.get("final_report", "")
-        db_store.append_message(sid, "assistant", assistant_response, cost=final_state.get("total_cost", 0.0), energy_joules=final_state.get("total_joules", 0.0), energy_gco2e=final_state.get("total_gco2e", 0.0))
-        
-        # Record actual spend in budget manager
-        budget_manager.record_spend(sid, final_state.get("total_cost", 0.0))
-        
-        # Store in both caches after a successful run.
         run_tier = final_state.get("routing_logs", [{}])[0].get("tier_selected", "unknown") if final_state.get("routing_logs") else "unknown"
         run_model = final_state.get("routing_logs", [{}])[0].get("model_used", "unknown") if final_state.get("routing_logs") else "unknown"
         run_cost = final_state.get("total_cost", 0.0)
+        db_store.append_message(
+            sid, "assistant", assistant_response,
+            model_used=run_model, tier=run_tier,
+            cost=run_cost, energy_joules=final_state.get("total_joules", 0.0), energy_gco2e=final_state.get("total_gco2e", 0.0),
+            trace_data=final_state.get("routing_logs"),
+        )
 
+        # Record actual spend in budget manager
+        budget_manager.record_spend(sid, final_state.get("total_cost", 0.0))
+
+        # Store in both caches after a successful run.
         # Layer 1: in-process session cache.
         smart_cache.store(
             query=request.query,
@@ -368,7 +435,7 @@ Return ONLY valid JSON: {{"score_a": 8, "score_b": 7, "reason": "..."}}"""
             model=run_model,
             cost=run_cost,
         )
-        
+
         return {
             "session_id": sid,
             "report": assistant_response,

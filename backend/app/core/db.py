@@ -52,7 +52,7 @@ class DBStore:
         if not db: return
         db.table("sessions").update({"title": title, "updated_at": "now()"}).eq("id", session_id).execute()
 
-    def append_message(self, session_id: str, role: str, content: str, model_used: str = None, tier: str = None, cost: float = 0.0, energy_joules: float = 0.0, energy_gco2e: float = 0.0) -> None:
+    def append_message(self, session_id: str, role: str, content: str, model_used: str = None, tier: str = None, cost: float = 0.0, energy_joules: float = 0.0, energy_gco2e: float = 0.0, trace_data: Optional[list] = None) -> None:
         if not db: return
         # Persistence must never sink the request: if Supabase is unreachable or the
         # insert fails, log it and let the caller still return the response to the user.
@@ -65,7 +65,8 @@ class DBStore:
                 "content": content,
                 "model_used": model_used,
                 "tier": tier,
-                "cost": cost
+                "cost": cost,
+                "trace_data": trace_data
             }).execute()
 
             db.table("sessions").update({"updated_at": "now()"}).eq("id", session_id).execute()
@@ -115,7 +116,7 @@ class DBStore:
             return None
             
         session_data = session_res.data[0]
-        msg_res = db.table("messages").select("role, content, model_used, cost").eq("session_id", session_id).order("created_at", desc=False).execute()
+        msg_res = db.table("messages").select("role, content, model_used, tier, cost, trace_data").eq("session_id", session_id).order("created_at", desc=False).execute()
         
         return {
             "session_id": session_data["id"],

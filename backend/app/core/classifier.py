@@ -186,6 +186,11 @@ class PromptClassifier:
                     final_score = 7.0 + top_score * 3.0        # ~7.0 – 10.0
                 final_score = round(min(10.0, max(1.0, final_score)), 1)
 
+                print(f"[HF DEBUG] Query: {query}")
+                print(f"[HF DEBUG] Raw labels: {result['labels']}")
+                print(f"[HF DEBUG] Raw scores: {result['scores']}")
+                print(f"[HF DEBUG] Final adjusted score: {final_score}")
+
                 reason = f"HuggingFace classified as '{top_label}' with {top_score:.0%} confidence"
                 print(f"[HuggingFace Classifier] Query: '{query[:50]}...'")
                 print(f"[HuggingFace Classifier] Label: {top_label} | Confidence: {top_score:.2%}")
@@ -276,6 +281,10 @@ class PromptClassifier:
             reason = "Keyword match: simple factual query"
 
         total_score = min(10.0, max(1.0, round(base_score + length_bonus, 1)))
+
+        print(f"[FALLBACK DEBUG] Query: {features.get('prompt_text', '')}")
+        print(f"[FALLBACK DEBUG] has_reasoning={has_reasoning} has_analysis={has_analysis} token_count={token_count}")
+        print(f"[FALLBACK DEBUG] base_score={base_score} length_bonus={round(length_bonus, 1)} total_score={total_score} -> tier={self.tier_for_score(total_score)}")
 
         return ComplexityScore(
             score=total_score,

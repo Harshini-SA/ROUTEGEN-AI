@@ -23,6 +23,12 @@ interface Message {
   trace?: any[];
   budget_downgrade?: boolean;
   budget_downgrade_reason?: string;
+  isHistorical?: boolean;
+  // True only for assistant messages saved before trace_data persistence existed —
+  // no real trace to show, so render a static badge instead of a broken/empty pipeline view.
+  noTraceData?: boolean;
+  model_used?: string;
+  tier?: string;
 }
 
 interface SessionSummary {
@@ -291,16 +297,18 @@ const ChatApp = () => {
 
       const messagesRaw = data.messages || [];
       const messages = messagesRaw.map((m: any) => {
-        if (m.role === 'assistant' && m.cost !== undefined) {
-          // Reconstruct historical trace to render the collapsed pipeline pill
-          m.trace = [
-            { node_id: 'query_parsing', tier_selected: m.tier || 'unknown' },
-            { node_id: 'web_search_summarisation' },
-            { node_id: 'evidence_analysis' },
-            { node_id: 'contradiction_detection' },
-            { node_id: 'final_formatting', model_used: m.model_used || 'unknown', cost_usd: m.cost || 0 }
-          ];
-          m.isHistorical = true;
+        if (m.role === 'assistant') {
+          if (Array.isArray(m.trace_data) && m.trace_data.length > 0) {
+            // Real saved trace (either the full 5-node routing_logs, or the single-node
+            // cache-hit entry) — render it exactly as it happened, not a reconstruction.
+            m.trace = m.trace_data;
+            m.isHistorical = true;
+          } else if (m.cost !== undefined) {
+            // Saved before trace_data persistence existed — no real per-node data to show.
+            // Don't fake a trace (that's what produced the "Unknown tier / stuck spinner"
+            // bug); show a plain static badge instead.
+            m.noTraceData = true;
+          }
         }
         return m;
       });
@@ -947,6 +955,13 @@ const ChatApp = () => {
                           {msg.trace && msg.trace.length > 0 && (
                             <div className="mt-1">
                               <PipelineVisualizer trace={msg.trace} autoCollapse={!msg.isHistorical} defaultCollapsed={msg.isHistorical} />
+                            </div>
+                          )}
+                          {/* Saved before trace_data existed — no real per-node data to animate,
+                              so show a plain static badge instead of a fake/broken pipeline view. */}
+                          {msg.noTraceData && (
+                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-surface border border-border text-[10px] text-text-secondary uppercase tracking-wider mb-1 w-fit">
+                              Model: {msg.model_used || 'unknown'} · Historical message
                             </div>
                           )}
                           <div className="pt-2 text-text-primary prose prose-invert prose-sm sm:prose-base prose-p:leading-relaxed prose-pre:bg-surface prose-pre:border prose-pre:border-border">

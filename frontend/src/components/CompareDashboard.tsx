@@ -1,6 +1,8 @@
 import React, { useState, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Scale, DollarSign, Award, Zap, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { API_BASE } from '../lib/api';
+import { supabase } from '../lib/supabase';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -72,7 +74,8 @@ const preprocessLaTeX = (content: string) => {
     .replace(/\\\)/g, '$$');
 };
 
-const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId }) => {
+const CompareDashboard: React.FC<CompareDashboardProps> = ({ sessionId }) => {
+  const navigate = useNavigate();
   const [prompt, setPrompt] = useState('');
   const [isRunning, setIsRunning] = useState(false);
   const [result, setResult] = useState<CompareResult | null>(null);
@@ -100,15 +103,47 @@ const CompareDashboard: React.FC<CompareDashboardProps> = ({ session, sessionId 
     stageTimers.current.push(setTimeout(() => setStage('judging'), 6000));
 
     try {
+      // Fetch a fresh session right before the call instead of trusting a `session` prop
+      // that may have been captured stale — the same race ChatApp.tsx's handleSend already
+      // works around for /pipeline/run. If there's truly no session, don't call the API
+      // with `Authorization: Bearer undefined` (that's what was producing the 401) — bounce
+      // to /auth instead.
+      const { data: { session: freshSession } } = await supabase.auth.getSession();
+      if (!freshSession) {
+        setError('Session expired. Please log in again.');
+        setIsRunning(false);
+        clearStageTimers();
+        setStage('idle');
+        navigate('/auth');
+        return;
+      }
+
       const res = await fetch(`${API_BASE}/compare`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session?.access_token}`
+          'Authorization': `Bearer ${freshSession.access_token}`
         },
         body: JSON.stringify({ prompt, session_id: sessionId })
       });
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error('Compare API failed:', res.status, errorText);
+        if (res.status === 401) {
+          setError('Session expired. Please log in again.');
+          navigate('/auth');
+        } else {
+          setError('Comparison failed. Please try again.');
+        }
+        return; // Stop here — never touch response fields on a failed request.
+      }
+
       const data = await res.json();
+      if (!data || !data.routed || !data.baseline) {
+        setError('Invalid response from server.');
+        return;
+      }
       setResult(data);
     } catch (e) {
       setError('Failed to run comparison. Please try again.');

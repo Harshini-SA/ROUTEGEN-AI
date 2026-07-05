@@ -116,6 +116,8 @@ async def base_node(state: PipelineState, node_name: str, prompt: str, assertion
             cost = 0.0
             energy_joules = 0.0
             energy_gco2e = 0.0
+            in_tok = 0
+            out_tok = 0
 
         latency = (time.time() - start_time) * 1000
         log_entry = {

@@ -48,7 +48,24 @@ class DynamicRouter:
     Routes the prompt to the appropriate LLM model based on complexity score.
     """
     def __init__(self):
-        pass
+        self.provider_last_used: Dict[str, float] = {}
+        # Delay (in seconds) enforced between consecutive requests to the same provider
+        self.provider_cooldown: float = 2.0
+        
+    async def _throttle_provider(self, provider: str):
+        """Enforce a cooldown between requests to the same provider to prevent rate limits."""
+        now = time.time()
+        import asyncio
+        if provider in self.provider_last_used:
+            elapsed = now - self.provider_last_used[provider]
+            if elapsed < self.provider_cooldown:
+                wait_time = self.provider_cooldown - elapsed
+                logger.info(f"⏳ Throttling {provider} for {wait_time:.2f}s to avoid rate limits.")
+                await asyncio.sleep(wait_time)
+                # Update time after sleep
+                self.provider_last_used[provider] = time.time()
+                return
+        self.provider_last_used[provider] = now
         
     async def dispatch(self, prompt: str, complexity: ComplexityScore, tier_override: Optional[str] = None, model_override: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -77,6 +94,9 @@ class DynamicRouter:
             kwargs = {}
             if "cerebras" in model_id.lower():
                 kwargs["api_base"] = "https://api.cerebras.ai/v1"
+
+            # Throttle requests to the same provider
+            await self._throttle_provider(provider)
 
             # Fail fast instead of eating litellm's default 55-60s retry backoff on a
             # rate-limited model (esp. Cerebras). We have our OWN cross-model fallback in
